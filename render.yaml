@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: ai-portfolio-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health/live
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CHAT_SESSION_SECRET
+        generateValue: true
+      - key: CHAT_PROXY_SECRET
+        sync: false
+      - key: CHAT_DAILY_BUDGET_USD
+        value: "0"
+      - key: INGESTION_DAILY_BUDGET_USD
+        value: "0"

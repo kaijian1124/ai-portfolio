@@ -1,0 +1,32 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+# Local secrets
+.env
+.env.*
+!.env.example
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated test and tool output
+coverage/
+*.tsbuildinfo
+.ruff_cache/
+
+# Environment-specific SQL bootstrap files
+*.local.sql
+
+# Browser/evaluation outputs
+test-results/
+playwright-report/
+evaluation-results/
