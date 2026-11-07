@@ -6,10 +6,10 @@ import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 const db=new PGlite({extensions:{vector}});const admin='11111111-1111-4111-8111-111111111111';
 before(async()=>{await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid primary key);CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;INSERT INTO auth.users VALUES('${admin}');CREATE SCHEMA storage;CREATE TABLE storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
-for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
+for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
 await db.exec(`INSERT INTO portfolio_private.admin_users(user_id) VALUES('${admin}')`)});
 after(async()=>db.close());
-async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
+async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>k==='p_candidate_ids'?'{'+args[k].join(',')+'}':typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
 async function transaction(fn){await db.exec('BEGIN');try{return await fn()}finally{await db.exec('ROLLBACK')}}
 async function owner(){await db.exec('SET LOCAL ROLE authenticated');await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[admin])}
 async function service(){await db.exec('SET LOCAL ROLE service_role')}
@@ -55,4 +55,20 @@ await service();const session=randomUUID(),request=randomUUID();await rpc('chat_
 const message=await rpc('chat_finish',{p_request:request,p_question:'TEST question',p_answer:'TEST answer',p_sources:[],p_prompt:1,p_output:1,p_embedding:0,p_cost:.001,p_latency:10});
 const history=await rpc('chat_history',{p_session:session});assert.deepEqual(history.map(row=>row.role),['user','assistant']);
 assert.equal(await rpc('chat_vote',{p_session:randomUUID(),p_message:message,p_vote:1}),false);assert.equal(await rpc('chat_vote',{p_session:session,p_message:message,p_vote:1}),true);
+}));
+
+
+test('resume imports add selected drafts only, skip existing content and replay safely',()=>transaction(async()=>{
+ await owner();const upload=await rpc('admin_register_upload',{p_kind:'resume',p_title:'TEST Resume',p_filename:'test.pdf',p_path:randomUUID()+'/'+randomUUID()+'.pdf',p_sha256:'b'.repeat(64),p_size:100});
+ const existing=await rpc('admin_catalog_mutate',{p_resource:'skills',p_id:null,p_data:{name:'Python',description:'KEEP EXISTING',status:'published'},p_expected_revision:null,p_request_id:randomUUID()});
+ const request=randomUUID(),skill=randomUUID(),project=randomUUID();
+ assert.equal((await rpc('admin_resume_import_begin',{p_resume:upload.record.id,p_request:request,p_budget:1,p_reserve:.05})).claimed,true);
+ assert.equal((await rpc('admin_resume_import_begin',{p_resume:upload.record.id,p_request:request,p_budget:1,p_reserve:.05})).claimed,false);
+ await service();await rpc('resume_import_finish',{p_request:request,p_candidates:[{id:skill,resource:'skills',data:{name:'Python',description:'OVERWRITE ATTEMPT',status:'published'},evidence_quote:'TEST'},{id:project,resource:'projects',data:{title:'TEST addition',slug:'test-addition',status:'published'},evidence_quote:'TEST'}],p_prompt:10,p_output:10,p_cost:.001});
+ await owner();assert.equal((await rpc('admin_resume_import_get',{p_resume:upload.record.id,p_request:request})).status,'completed');
+ const result=await rpc('admin_resume_import_apply',{p_resume:upload.record.id,p_request:request,p_candidate_ids:[skill,project]});assert.equal(result.created.length,1);assert.equal(result.skipped,1);
+ assert.deepEqual(await rpc('admin_resume_import_apply',{p_resume:upload.record.id,p_request:request,p_candidate_ids:[skill,project]}),result);
+ const kept=await rpc('admin_catalog_get',{p_resource:'skills',p_id:existing.id});assert.equal(kept.description,'KEEP EXISTING');assert.equal(kept.status,'published');assert.equal(kept.revision,existing.revision);
+ assert.equal((await rpc('admin_catalog_get',{p_resource:'projects',p_id:result.created[0].id})).status,'draft');
+ await db.exec('SET LOCAL ROLE anon');await assert.rejects(rpc('admin_resume_import_get',{p_resume:upload.record.id,p_request:request}),/permission denied/);
 }));

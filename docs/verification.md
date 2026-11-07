@@ -11,3 +11,11 @@ Verified during the bulk implementation pass on 2026-11-07.
 - Docker image not built locally because Docker daemon is not running. Real storage upload, real embeddings, generated-answer quality, cloud job scheduling and first deployment remain explicit owner integration checks. See next-steps.md.
 
 AI budgets remain zero by default. Functional implementation is complete for the documented baseline; this record does not establish production reliability or measured RAG accuracy.
+
+## Resume import and 300-page update
+
+- Backend: 119 tests passed, 87.83% aggregate coverage; Ruff check/format passed.
+- Frontend: 106 tests passed; selected core/API line coverage 98%, branch coverage 92.38%. Production build and TypeScript check passed.
+- Database: 48 tests passed, including insert-only draft creation, unchanged existing published content, deduplication and idempotent confirmation.
+- The user's original 108-page PDF passed real local validation/text extraction: 108 text sections, 304 chunks. No document text or file was sent to a third party for this check.
+- New migration 202611070004_resume_import.sql has not been applied to the live database. No real paid Resume extraction, authenticated browser import, push or deployment performed for this update.

@@ -25,8 +25,8 @@ def extract_document(data: bytes, suffix: str):
             raise ValueError("invalid_pdf")
         try:
             reader = PdfReader(BytesIO(data), strict=True)
-            if reader.is_encrypted or len(reader.pages) > 100:
-                raise ValueError("encrypted_or_too_many_pages")
+            if reader.is_encrypted or len(reader.pages) > 300:
+                raise ValueError("encrypted_pdf_or_over_300_pages")
             for index, page in enumerate(reader.pages):
                 text = clean(page.extract_text() or "")
                 if text:

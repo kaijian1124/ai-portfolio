@@ -4,7 +4,7 @@ A database-driven Next.js portfolio and private admin dashboard, with a FastAPI 
 
 **Start here:** [configuration and deployment guide (中文)](docs/next-steps.md).
 
-Implemented: public Profile/About/Skills/Experience/Education/Projects/Resume; audited admin CRUD, soft deletion/restore and conflict-safe retries; private Resume and document version management; public project images; PDF/DOCX ingestion with leases and atomic index promotion; approval-gated pgvector retrieval; English/Chinese grounded chat with source links, history, SSE status/final answer and feedback; persistent AI quotas; monitoring and reviewed evaluation tooling; Docker, CI and worker workflows.
+Implemented: public Profile/About/Skills/Experience/Education/Projects/Resume; audited admin CRUD, soft deletion/restore and conflict-safe retries; private Resume and document version management; reviewed insert-only Resume-to-draft imports; public project images; PDF/DOCX ingestion with leases and atomic index promotion; approval-gated pgvector retrieval; English/Chinese grounded chat with source links, history, SSE status/final answer and feedback; persistent AI quotas; monitoring and reviewed evaluation tooling; Docker, CI and worker workflows.
 
 Code is implemented locally. The new cloud migrations, service/API keys, GitHub remote, deployment and paid end-to-end AI validation still need owner setup. The application does not claim measured RAG accuracy, completed production deployment or high availability. AI budgets default to zero.
 
@@ -35,3 +35,5 @@ Open http://localhost:3000. Run the worker separately with `uv run --env-file .e
 - [Tests, evaluation, troubleshooting and recovery](docs/operations.md)
 
 Web uploads are limited to 4 MB for Vercel compatibility. Knowledge files remain private, and extracted text reaches public AI answers only after explicit owner approval. AI output is validated before the final answer is sent; streaming is not token-by-token. Render Free and Actions schedules have cold-start/latency limitations. See the guides for actual operating boundaries.
+
+Existing installations: apply the new `supabase/migrations/202611070004_resume_import.sql` once to enable Resume imports. PDF maximum is 300 pages; web uploads remain 4 MB. Resume extraction uses the chat budget and never updates or deletes existing content.

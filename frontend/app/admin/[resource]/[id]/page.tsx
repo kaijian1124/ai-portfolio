@@ -73,6 +73,16 @@ export default async function Editor({
             projects={projects?.ok ? projects.data.records : []}
           />
         )}
+        {resource === "resumes" &&
+          id !== "new" &&
+          result?.ok &&
+          !result.data.record.deleted_at && (
+            <p>
+              <a className="back-link" href={`/admin/resume-import/${id}`}>
+                Analyze Resume and preview additions ↗
+              </a>
+            </p>
+          )}
         {resource === "documents" && id !== "new" && (
           <>
             <h2>Document versions</h2>

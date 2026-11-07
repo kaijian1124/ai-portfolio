@@ -48,3 +48,7 @@ npm test
 PGlite is used only as an in-memory PostgreSQL test engine. It is not the application database and adds no production service. Tests simulate Supabase API roles; they verify PostgreSQL grants, RLS filtering and constraints, but not hosted Auth, Storage, Dashboard event triggers or PostgREST routing. Live API verification follows after the user applies the migration.
 
 Fixture rows exist only inside the test process. Never copy test fixture inserts into the cloud project.
+
+## Reviewed Resume imports
+
+Existing installations must run `migrations/202611070004_resume_import.sql` once after the earlier migrations. This introduces private, idempotent extraction previews and insert-only confirmation. Selected candidates become drafts; existing records are preserved. See `../docs/next-steps.md`.

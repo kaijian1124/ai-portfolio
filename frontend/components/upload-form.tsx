@@ -49,7 +49,9 @@ export function UploadForm({
             : "Uploaded. Activate a Resume, or publish the related project for an image.",
       );
       form.reset();
-      router.refresh();
+      if (kind === "resume" && result.record?.id)
+        router.push(`/admin/resume-import/${result.record.id}`);
+      else router.refresh();
     } catch {
       setMessage(
         "Upload outcome unconfirmed. Check the list before retrying; content hashes prevent duplicate document registration.",
@@ -136,8 +138,8 @@ export function UploadForm({
         {kind === "image"
           ? "PNG/JPEG/WebP up to 4 MB. Images are public assets; upload only material intended for public display."
           : kind === "resume"
-            ? "PDF up to 4 MB. Files stay private; only the active version is publicly downloadable."
-            : "Text PDF or DOCX up to 4 MB and 100 PDF pages. Scanned PDFs require OCR elsewhere. Processing sends extracted text to OpenAI for embeddings. Replacements require fresh public-use approval."}
+            ? "PDF up to 4 MB. Files stay private; only the active version is publicly downloadable. After upload, text is sent to OpenAI to preview new portfolio drafts; nothing is overwritten or published."
+            : "Text PDF or DOCX up to 4 MB and 300 PDF pages. Scanned PDFs require OCR elsewhere. Processing sends extracted text to OpenAI for embeddings. Replacements require fresh public-use approval."}
       </p>
       <button disabled={pending}>{pending ? "Uploading…" : "Upload"}</button>
       {message && (

@@ -13,6 +13,7 @@ from app.content import router as content_router
 from app.files import router as files_router
 from app.limits import RequestLimitsMiddleware
 from app.profile import router as profile_router
+from app.resume_import import router as resume_import_router
 
 
 class Liveness(BaseModel):
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     application.include_router(content_router)
     application.include_router(files_router)
     application.include_router(chat_router)
+    application.include_router(resume_import_router)
     return application
 
 

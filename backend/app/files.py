@@ -58,7 +58,7 @@ def validate_upload(data, kind, filename):
 
         try:
             pdf = PdfReader(BytesIO(data), strict=True)
-            if pdf.is_encrypted or len(pdf.pages) > 100:
+            if pdf.is_encrypted or len(pdf.pages) > 300:
                 raise ValueError("invalid_resume")
         except Exception:  # noqa: BLE001 - sanitize failures at the external-service/parser boundary
             raise ValueError("invalid_resume") from None

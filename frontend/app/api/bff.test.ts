@@ -18,6 +18,7 @@ vi.mock("server-only", () => ({}));
 import { POST as ask } from "./chat/route";
 import { POST as feedback } from "./chat/feedback/route";
 import { POST as reset } from "./chat/reset/route";
+import { POST as resumeImport } from "./admin/resume-import/[id]/route";
 import { POST as upload } from "./admin/upload/route";
 import { GET as download } from "./admin/files/[resource]/[id]/route";
 import { catalogAction, reindexAction } from "../admin/catalog-actions";
@@ -234,4 +235,96 @@ it("catalog actions check auth, retain uncertain outcomes and invalidate public 
   mocks.api.mockResolvedValue({ ok: true, data: {} });
   expect((await reindexAction(idle, data)).status).toBe("saved");
   expect((await reindexAction(idle, new FormData())).status).toBe("invalid");
+});
+
+it("Resume import proxy enforces auth, origin and ID-only confirmation", async () => {
+  const params = { params: Promise.resolve({ id }) };
+  const path = "/api/admin/resume-import/" + id;
+  expect(
+    (
+      await resumeImport(
+        request(path, {}, { origin: "https://evil.test" }),
+        params,
+      )
+    ).status,
+  ).toBe(403);
+  mocks.access.mockResolvedValue({ state: "anonymous" });
+  expect(
+    (
+      await resumeImport(
+        request(path, { action: "analyze", request_id: id }),
+        params,
+      )
+    ).status,
+  ).toBe(401);
+  mocks.access.mockResolvedValue({
+    state: "authorized",
+    accessToken: "private-jwt",
+  });
+  expect(
+    (
+      await resumeImport(request(path, { action: "analyze", request_id: id }), {
+        params: Promise.resolve({ id: "bad" }),
+      })
+    ).status,
+  ).toBe(422);
+  expect(
+    (
+      await resumeImport(
+        request(path, {
+          action: "apply",
+          request_id: id,
+          candidate_ids: [id],
+          data: { status: "published" },
+        }),
+        params,
+      )
+    ).status,
+  ).toBe(422);
+  mocks.backend.mockResolvedValue(
+    new Response('{"status":"completed","candidates":[]}'),
+  );
+  expect(
+    (
+      await resumeImport(
+        request(path, { action: "analyze", request_id: id }),
+        params,
+      )
+    ).status,
+  ).toBe(200);
+  expect(JSON.parse(mocks.backend.mock.calls[0][1].body)).toEqual({
+    request_id: id,
+  });
+  mocks.backend.mockResolvedValue(
+    new Response('{"status":"applied","created":[],"skipped":1}'),
+  );
+  expect(
+    (
+      await resumeImport(
+        request(path, { action: "apply", request_id: id, candidate_ids: [id] }),
+        params,
+      )
+    ).status,
+  ).toBe(200);
+  expect(JSON.parse(mocks.backend.mock.calls[1][1].body)).toEqual({
+    candidate_ids: [id],
+  });
+  mocks.backend.mockResolvedValue(new Response("{}", { status: 429 }));
+  expect(
+    (
+      await resumeImport(
+        request(path, { action: "analyze", request_id: id }),
+        params,
+      )
+    ).status,
+  ).toBe(429);
+  mocks.backend.mockRejectedValue(new Error("private error"));
+  expect(
+    (
+      await resumeImport(
+        request(path, { action: "analyze", request_id: id }),
+        params,
+      )
+    ).status,
+  ).toBe(503);
 });
