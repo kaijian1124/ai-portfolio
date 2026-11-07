@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { Icon, type IconName } from "../../components/icon";
 import { AdminNav } from "../../components/admin-nav";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
@@ -85,18 +87,53 @@ export default async function AdminPage() {
             userId={access.userId}
           />
         </Suspense>
-        <div className="empty-state">
-          <span className="small-label">Content management</span>
-          <p>
-            <a className="back-link" href="/admin/profile">
-              Edit profile ↗
-            </a>
-          </p>
-          <p>
-            Save drafts, publish current information, and withdraw outdated
-            content. Use the navigation to manage projects, skills, experience,
-            education, Resume versions, and knowledge documents.
-          </p>
+        <div className="admin-shortcuts">
+          {(
+            [
+              [
+                "/admin/profile",
+                "Profile",
+                "Your introduction and public contact details.",
+                "user",
+              ],
+              [
+                "/admin/projects",
+                "Projects",
+                "Draft, refine and publish your work.",
+                "code",
+              ],
+              [
+                "/admin/resume",
+                "Resume",
+                "Upload files and choose the public version.",
+                "document",
+              ],
+              [
+                "/admin/knowledge-base",
+                "Knowledge base",
+                "Manage documents and AI-use approval.",
+                "book",
+              ],
+              [
+                "/admin/monitoring",
+                "AI monitoring",
+                "Review usage, feedback and processing.",
+                "chart",
+              ],
+              [
+                "/admin/activity",
+                "Audit history",
+                "Follow changes across your portfolio.",
+                "history",
+              ],
+            ] as Array<[string, string, string, IconName]>
+          ).map(([href, title, description, icon]) => (
+            <Link href={href} key={href}>
+              <Icon name={icon} size={24} />
+              <strong>{title}</strong>
+              <span>{description}</span>
+            </Link>
+          ))}
         </div>
         <a className="back-link" href="/">
           ← View portfolio

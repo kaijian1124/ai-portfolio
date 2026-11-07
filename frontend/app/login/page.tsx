@@ -8,7 +8,7 @@ export default async function LoginPage() {
   const access = await getAdminAccess();
   if (access.state === "authorized") redirect("/admin");
   return (
-    <main>
+    <main id="main-content" className="auth-main">
       <header>
         <a className="wordmark" href="/">
           Portfolio<span className="accent">.</span>

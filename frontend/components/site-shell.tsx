@@ -1,26 +1,30 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { PublicHeader } from "./public-header";
+import { Icon } from "./icon";
 export function SiteShell({ children }: { children: ReactNode }) {
   return (
-    <main>
-      <header className="site-header">
-        <a className="wordmark" href="/">
-          Portfolio<span className="accent">.</span>
-        </a>
-        <nav aria-label="Main navigation">
-          <a href="/about">About</a>
-          <a href="/projects">Projects</a>
-          <a href="/resume">Resume</a>
-          <a className="nav-chat" href="/chat">
-            Ask AI ↗
-          </a>
-        </nav>
-      </header>
-      {children}
-      <footer>
-        <span>Professional portfolio</span>
-        <a href="/privacy">Privacy</a>
-        <a href="/login">Admin</a>
+    <div className="site-frame">
+      <PublicHeader />
+      <main id="main-content" tabIndex={-1} className="public-main">
+        {children}
+      </main>
+      <footer className="site-footer">
+        <div>
+          <Link className="footer-brand" href="/">
+            <Icon name="terminal" size={18} /> Portfolio.
+          </Link>
+          <p>Explore the work. Follow the thinking.</p>
+        </div>
+        <div className="footer-links">
+          <Link href="/about">About</Link>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/login">
+            Admin <Icon name="external" size={14} />
+          </Link>
+        </div>
+        <span className="footer-note">A living collection of work.</span>
       </footer>
-    </main>
+    </div>
   );
 }

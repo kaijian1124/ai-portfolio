@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { warmBackend } from "../lib/backend-readiness";
+import { Icon } from "./icon";
 import { parseEvents } from "../lib/sse";
 type Source = {
   id: string;
@@ -54,7 +55,11 @@ export function ChatPanel() {
     };
   }, [wake]);
   useEffect(() => {
-    void bottom.current?.scrollIntoView({ behavior: "smooth" });
+    void bottom.current?.scrollIntoView({
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
   }, [messages, status]);
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -181,6 +186,15 @@ export function ChatPanel() {
         </a>
       </aside>
       <section className="chat-box" aria-label="Portfolio assistant">
+        <div className="chat-box-header">
+          <span>
+            <Icon name="message" />
+          </span>
+          <div>
+            <strong>Portfolio assistant</strong>
+            <small>Explore the work. Check the sources.</small>
+          </div>
+        </div>
         <div className="chat-messages" aria-live="polite">
           {!messages.length && (
             <p className="content-message">

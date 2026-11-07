@@ -50,7 +50,28 @@ export default async function CatalogPage({
           {labels[resource]}
           <span className="accent">.</span>
         </h1>
-        {!trash && resource === "resumes" && <UploadForm kind="resume" />}
+        {!trash && resource === "resumes" && (
+          <>
+            <div className="resume-flow">
+              <div>
+                <span className="small-label">01 / Upload</span>
+                <strong>Save the PDF</strong>The original stays available even
+                if AI analysis fails.
+              </div>
+              <div>
+                <span className="small-label">02 / Optional analysis</span>
+                <strong>Preview additions</strong>Confirm new drafts without
+                changing existing content.
+              </div>
+              <div>
+                <span className="small-label">03 / Publish</span>
+                <strong>Activate Resume</strong>Choose the version visitors can
+                view and download.
+              </div>
+            </div>
+            <UploadForm kind="resume" />
+          </>
+        )}
         {!trash && resource === "documents" && (
           <UploadForm
             kind="knowledge"

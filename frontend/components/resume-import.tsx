@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { fields, paths, type Resource } from "../lib/catalog-schema";
 type Candidate = {
@@ -122,6 +123,22 @@ export function ResumeImport({
   const candidates = report?.candidates ?? [];
   return (
     <div className="resume-import">
+      <p className="save-success">
+        Your PDF is already uploaded. AI analysis is optional and does not
+        publish the Resume.
+      </p>
+      <div className="form-controls">
+        <Link className="button-link button-secondary" href="/admin/resume">
+          Back to files / activate Resume
+        </Link>
+        <a
+          href={`/api/admin/files/resumes/${resumeId}`}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          View uploaded PDF ↗
+        </a>
+      </div>
       <p className="content-message">
         Resume text is sent to OpenAI for analysis, using the chat AI budget.
         Proposed skills, projects, experience and education need your review.

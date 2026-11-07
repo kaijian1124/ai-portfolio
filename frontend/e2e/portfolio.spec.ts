@@ -9,6 +9,8 @@ test.beforeEach(async ({ page }) => {
 });
 test("public navigation and responsive bounds", async ({ page }) => {
   await page.goto("/");
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  if (await menu.isVisible()) await menu.click();
   await expect(
     page.getByRole("navigation", { name: "Main navigation" }),
   ).toBeVisible();

@@ -8,5 +8,9 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return children;
+  return (
+    <div className="admin-workspace" id="main-content" tabIndex={-1}>
+      {children}
+    </div>
+  );
 }
