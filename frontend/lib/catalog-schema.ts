@@ -190,7 +190,9 @@ export function editableData(
   return Object.fromEntries(
     fields[resource].map((f) => [
       f.key,
-      record?.[f.key] ?? f.value ?? (f.kind === "checkbox" ? false : ""),
+      record?.[f.key] ??
+        f.value ??
+        (f.kind === "project" ? null : f.kind === "checkbox" ? false : ""),
     ]),
   );
 }

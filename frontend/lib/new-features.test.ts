@@ -134,6 +134,18 @@ it("maps administrative errors without exposing server details", async () => {
     reason: "unavailable",
   });
 });
+it("keeps an unlinked knowledge document's project ID null when editing", () => {
+  expect(
+    editableData("documents", {
+      id,
+      revision: 1,
+      deleted_at: null,
+      title: "TEST",
+      project_id: null,
+    }).project_id,
+  ).toBeNull();
+});
+
 it("allowlists resources and mutation fields", () => {
   expect(resourceFromPath("knowledge-base")).toBe("documents");
   expect(resourceFromPath("users")).toBeNull();
