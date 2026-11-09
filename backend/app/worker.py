@@ -11,7 +11,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from app.db import base_url, headers, rpc
-from app.ingestion import chunk_sections, extract_document
+from app.ingestion import chunk_sections, embedding_text, extract_document
 
 
 async def process_job(client, ai, job):
@@ -35,14 +35,14 @@ async def process_job(client, ai, job):
         sections = await run_in_threadpool(
             extract_document, data, PurePosixPath(job["filename"]).suffix.lower()
         )
-        chunks = chunk_sections(sections)
+        chunks = await run_in_threadpool(chunk_sections, sections)
         price = float(os.getenv("EMBEDDING_USD_PER_MILLION", "0.02"))
         budget = float(os.getenv("INGESTION_DAILY_BUDGET_USD", "0"))
         if not math.isfinite(price) or not math.isfinite(budget) or price <= 0 or budget < 0:
             raise ValueError("invalid_embedding_budget")
         if model != "text-embedding-3-small" and not os.getenv("EMBEDDING_USD_PER_MILLION"):
             raise ValueError("embedding_price_required")
-        estimate = (sum(len(c["text"].encode("utf-8")) + 100 for c in chunks)) * price / 1000000
+        estimate = sum(len(embedding_text(c).encode("utf-8")) for c in chunks) * price / 1000000
         reserved = await rpc(
             client,
             "worker_reserve_budget",
@@ -59,7 +59,7 @@ async def process_job(client, ai, job):
         for index in range(0, len(chunks), 32):
             batch = chunks[index : index + 32]
             embedded = await ai.embeddings.create(
-                model=model, input=[c["text"] for c in batch], dimensions=1536
+                model=model, input=[embedding_text(c) for c in batch], dimensions=1536
             )
             tokens += embedded.usage.total_tokens
             if len(embedded.data) != len(batch):

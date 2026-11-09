@@ -14,6 +14,8 @@ type Metrics = {
   ingestion_tokens: number;
   requests: number;
   prompt_tokens: number;
+  chat_cached_input_tokens?: number;
+  usage_unreported?: number;
   output_tokens: number;
   embedding_tokens: number;
   estimated_cost_usd: number;
@@ -27,6 +29,20 @@ type Metrics = {
     latency_ms: number;
     error: string | null;
     created_at: string;
+    rag_usage?: Array<{
+      stage: string;
+      model: string;
+      input_tokens?: number;
+      cached_input_tokens?: number;
+      output_tokens?: number;
+      embedding_tokens?: number;
+      input_usd_per_million?: number;
+      cached_input_usd_per_million?: number;
+      output_usd_per_million?: number;
+      embedding_usd_per_million?: number;
+      cost_usd?: number;
+      usage_status?: string;
+    }>;
   }>;
   jobs: Array<{
     id: string;
@@ -75,6 +91,7 @@ export default async function Monitoring() {
                   Number(result.data.estimated_cost_usd).toFixed(4),
                 ],
                 ["Input tokens", result.data.prompt_tokens],
+                ["Cached input tokens", result.data.chat_cached_input_tokens ?? 0],
                 ["Output tokens", result.data.output_tokens],
                 ["Embedding tokens", result.data.embedding_tokens],
                 [
@@ -82,6 +99,7 @@ export default async function Monitoring() {
                   Math.round(result.data.average_latency_ms),
                 ],
                 ["Errors", result.data.errors],
+                ["Failed requests without metering", result.data.usage_unreported ?? 0],
                 ["Helpful feedback", result.data.feedback.positive],
                 ["Unhelpful feedback", result.data.feedback.negative],
               ].map(([name, value]) => (
@@ -149,7 +167,27 @@ export default async function Monitoring() {
                     <tr key={r.id}>
                       <td>{r.created_at.slice(0, 16).replace("T", " ")}</td>
                       <td>{r.status}</td>
-                      <td>{Number(r.cost_usd).toFixed(4)}</td>
+                      <td>
+                        {Number(r.cost_usd).toFixed(6)}
+                        {r.rag_usage?.length ? (
+                          <details>
+                            <summary>Token and price details</summary>
+                            <ul>
+                              {r.rag_usage.map((call, index) => (
+                                <li key={index}>
+                                  {call.stage} · {call.model}
+                                  {call.usage_status === "unknown"
+                                    ? " · Usage not reported"
+                                    : ` · USD ${Number(call.cost_usd).toFixed(6)}`}
+                                  {call.usage_status === "unknown" ? null : call.embedding_tokens !== undefined
+                                    ? ` · ${call.embedding_tokens} embedding tokens at $${call.embedding_usd_per_million}/M`
+                                    : ` · ${(call.input_tokens ?? 0) - (call.cached_input_tokens ?? 0)} input at $${call.input_usd_per_million}/M · ${call.cached_input_tokens} cached at $${call.cached_input_usd_per_million}/M · ${call.output_tokens} output at $${call.output_usd_per_million}/M`}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : null}
+                      </td>
                       <td>{r.latency_ms}</td>
                       <td>{r.error ?? "—"}</td>
                     </tr>

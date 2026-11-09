@@ -244,9 +244,9 @@ async def test_grounded_answers_and_citation_validation(monkeypatch, kind):
                     "skills": [],
                 }
             )
-        if name == "chat_history":
+        if name == "rag_history":
             return [{"role": "user", "content": "TEST project architecture"}]
-        if name == "search_knowledge":
+        if name == "hybrid_knowledge":
             return [
                 {
                     "id": cid,

@@ -20,6 +20,9 @@ def score_case(case: dict, answer: dict) -> dict:
     ids = {str(s.get("id")) for s in sources}
     expected = set(case.get("expected_source_ids", []))
     keywords = case.get("required_terms", [])
+    forbidden = case.get("forbidden_terms", [])
+    candidates = set(answer.get("candidate_ids", []))
+    subquestions = case.get("expected_subquestion_sources", [])
     refusal = not sources and any(
         term in text
         for term in ["not enough", "don't have enough", "insufficient", "足够", "无法核实"]
@@ -30,6 +33,16 @@ def score_case(case: dict, answer: dict) -> dict:
         "refusal_correct": refusal == bool(case.get("expect_refusal")),
         "has_citations": bool(sources),
         "source_recall": len(expected & ids) / len(expected) if expected else None,
+        "candidate_recall": len(expected & candidates) / len(expected)
+        if expected and "candidate_ids" in answer
+        else None,
+        "subquestion_evidence_coverage": sum(bool(set(group) & ids) for group in subquestions)
+        / len(subquestions)
+        if subquestions
+        else None,
+        "forbidden_term_avoidance": not any(term.casefold() in text for term in forbidden)
+        if forbidden
+        else None,
         "required_term_coverage": sum(term.casefold() in text for term in keywords) / len(keywords)
         if keywords
         else None,
@@ -44,8 +57,14 @@ def summarize(rows: list[dict]) -> dict:
         "citation_rate": sum(r["has_citations"] for r in rows) / len(rows),
         "average_latency_ms": statistics.mean(r["latency_ms"] for r in rows),
     }
-    for key in ["source_recall", "required_term_coverage"]:
-        values = [r[key] for r in rows if r[key] is not None]
+    for key in [
+        "source_recall",
+        "required_term_coverage",
+        "candidate_recall",
+        "subquestion_evidence_coverage",
+        "forbidden_term_avoidance",
+    ]:
+        values = [r[key] for r in rows if r.get(key) is not None]
         result[key] = statistics.mean(values) if values else None
     return result
 
@@ -129,6 +148,7 @@ async def evaluate(path: Path, output: Path, allow_paid: bool) -> None:
                 headers={
                     "X-Portfolio-Proxy": os.environ["CHAT_PROXY_SECRET"],
                     "X-Portfolio-Client-IP": "owner-evaluation",
+                    "X-Portfolio-Evaluation": "1",
                 },
                 json={"question": case["question"]},
             )
@@ -154,7 +174,7 @@ async def evaluate(path: Path, output: Path, allow_paid: bool) -> None:
             "dataset_hash": hashlib.sha256(data).hexdigest(),
             "metrics": metrics,
             "cases": rows,
-            "limitations": "Lexical term coverage and source recall are proxies; human review is still required for factual faithfulness.",
+            "limitations": "Candidate, citation and term coverage are proxies. Verify individual claims and ownership against sources by hand.",
         }
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -46,7 +46,7 @@ def validate_upload(data, kind, filename):
             }[fmt]
         except UnidentifiedImageError, OSError:
             raise ValueError("invalid_image") from None
-    if suffix not in ((".pdf",) if kind == "resume" else (".pdf", ".docx")):
+    if suffix not in ((".pdf",) if kind == "resume" else (".pdf", ".docx", ".md")):
         raise ValueError("unsupported_document")
     if suffix == ".pdf" and not data.startswith(b"%PDF-"):
         raise ValueError("invalid_pdf")
@@ -64,15 +64,17 @@ def validate_upload(data, kind, filename):
             raise ValueError("invalid_resume") from None
     return (
         suffix,
-        "application/pdf"
-        if suffix == ".pdf"
-        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        {
+            ".pdf": "application/pdf",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".md": "text/markdown",
+        }[suffix],
     )
 
 
 async def signed_url(client, bucket, path):
     if bucket not in BUCKETS.values() or not re.fullmatch(
-        r"[a-f0-9-]+/[a-f0-9-]+\.(pdf|docx|png|jpg|webp)", path
+        r"[a-f0-9-]+/[a-f0-9-]+\.(pdf|docx|md|png|jpg|webp)", path
     ):
         raise HTTPException(422, "Invalid file reference")
     response = await client.post(

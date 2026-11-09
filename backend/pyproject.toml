@@ -12,6 +12,8 @@ dependencies = [
     "python-multipart>=0.0.33",
     "pillow>=13.0.0",
     "defusedxml>=0.7.1",
+    "tiktoken>=0.12,<1",
+    "langgraph>=1,<2",
 ]
 
 [dependency-groups]

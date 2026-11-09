@@ -132,7 +132,7 @@ def test_upload_registration_and_safe_cleanup(client, monkeypatch, outcome):
     assert ("DELETE" in calls) == (outcome in ("duplicate", "rejected"))
 
 
-@pytest.mark.parametrize("mode", ["success", "failure", "missing", "quota"])
+@pytest.mark.parametrize("mode", ["success", "failure", "missing", "quota", "withdrawn"])
 def test_chat_stream_and_fail_closed(client, monkeypatch, mode):
     calls = []
 
@@ -152,6 +152,7 @@ def test_chat_stream_and_fail_closed(client, monkeypatch, mode):
             "output_tokens": 5,
             "embedding_tokens": 0,
             "cost_usd": 0.001,
+            "dependencies": [{"id": "revoked", "kind": "document"}] if mode == "withdrawn" else [],
         }
 
     class FakeAI:
@@ -166,6 +167,8 @@ def test_chat_stream_and_fail_closed(client, monkeypatch, mode):
 
     monkeypatch.setattr(chat, "rpc", rpc)
     monkeypatch.setattr(chat, "answer_question", answer)
+    current = AsyncMock(return_value=False)
+    monkeypatch.setattr(chat, "sources_current", current)
     monkeypatch.setattr(chat, "AsyncOpenAI", FakeAI)
     if mode == "missing":
         monkeypatch.delenv("OPENAI_API_KEY")
@@ -180,6 +183,10 @@ def test_chat_stream_and_fail_closed(client, monkeypatch, mode):
     if mode == "failure":
         assert "event: error" in response.text and "private provider error" not in response.text
         assert calls[-1][1]["p_error"] == "generation_failed_or_cancelled"
+    if mode == "withdrawn":
+        current.assert_awaited_once()
+        assert "event: answer" in response.text and "Verified TEST" not in response.text
+        assert calls[-1][1]["p_sources"] == []
 
 
 def test_feedback_source_and_proxy_protection(client, monkeypatch):

@@ -96,7 +96,7 @@ export function UploadForm({
                 ? "image/png,image/jpeg,image/webp"
                 : kind === "resume"
                   ? "application/pdf"
-                  : ".pdf,.docx"
+                  : ".pdf,.docx,.md"
             }
           />
         </div>
@@ -139,7 +139,7 @@ export function UploadForm({
           ? "PNG/JPEG/WebP up to 4 MB. Images are public assets; upload only material intended for public display."
           : kind === "resume"
             ? "PDF up to 4 MB. Files stay private; only the active version is publicly downloadable. After upload, text is sent to OpenAI to preview new portfolio drafts; nothing is overwritten or published."
-            : "Text PDF or DOCX up to 4 MB and 300 PDF pages. Scanned PDFs require OCR elsewhere. Processing sends extracted text to OpenAI for embeddings. Replacements require fresh public-use approval."}
+            : "Text PDF, DOCX, or Markdown up to 4 MB and 300 PDF pages. Scanned PDFs require OCR elsewhere. Upload only material cleared for OpenAI embedding. Approve public AI use after processing completes."}
       </p>
       <button disabled={pending}>{pending ? "Uploading…" : "Upload"}</button>
       {message && (

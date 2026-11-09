@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 import os
+import re
 import time
 from uuid import UUID, uuid4
 
@@ -16,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
-from app.chat_engine import answer_question, price_configuration
+from app.chat_engine import FALLBACK, answer_question, price_configuration, sources_current
 from app.db import headers, rpc
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -117,16 +118,41 @@ async def chat(body: Question, request: Request):
             httpx.AsyncClient(timeout=15) as client,
             AsyncOpenAI(timeout=30, max_retries=0) as ai,
         ):
+
+            async def record_usage(calls):
+                await rpc(
+                    client,
+                    "rag_record_usage",
+                    {"p_request": request_id, "p_calls": calls},
+                    service=True,
+                )
+
             try:
                 yield event(
                     "status", {"message": "Finding verified sources…", "mode": "validated_answer"}
                 )
-                task = asyncio.create_task(answer_question(client, ai, body.question, session))
+                task = asyncio.create_task(
+                    asyncio.wait_for(
+                        answer_question(client, ai, body.question, session, record_usage),
+                        timeout=50,
+                    )
+                )
                 while not task.done():
                     done, _ = await asyncio.wait({task}, timeout=5)
                     if not done:
                         yield ": heartbeat\n\n"
                 result = await task
+                if result.get("dependencies") and not await sources_current(
+                    client, result["dependencies"]
+                ):
+                    result["answer"] = (
+                        "目前没有足够的已核实资料回答这个问题。"
+                        if re.search(r"[\u4e00-\u9fff]", body.question)
+                        else FALLBACK
+                    )
+                    result["sources"] = []
+                    result["dependencies"] = []
+                    result["candidate_ids"] = []
                 message_id = await rpc(
                     client,
                     "chat_finish",
@@ -147,14 +173,16 @@ async def chat(body: Question, request: Request):
                 if not message_id:
                     raise RuntimeError("chat_request_expired")
                 # Validate complete structured output before releasing any answer text.
-                yield event(
-                    "answer",
-                    {
-                        "text": result["answer"],
-                        "sources": result["sources"],
-                        "message_id": message_id,
-                    },
-                )
+                payload = {
+                    "text": result["answer"],
+                    "sources": result["sources"],
+                    "message_id": message_id,
+                }
+                # Only the authenticated direct evaluator sets this flag. The Next.js proxy
+                # forwards a fixed header allowlist and never forwards evaluation headers.
+                if request.headers.get("x-portfolio-evaluation") == "1":
+                    payload["candidate_ids"] = result.get("candidate_ids", [])
+                yield event("answer", payload)
                 yield event("done", {})
             except asyncio.CancelledError:
                 raise

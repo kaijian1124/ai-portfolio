@@ -37,3 +37,11 @@ Open http://localhost:3000. Run the worker separately with `uv run --env-file .e
 Web uploads are limited to 4 MB for Vercel compatibility. Knowledge files remain private, and extracted text reaches public AI answers only after explicit owner approval. AI output is validated before the final answer is sent; streaming is not token-by-token. Render Free and Actions schedules have cold-start/latency limitations. See the guides for actual operating boundaries.
 
 Existing installations: apply the new `supabase/migrations/202611070004_resume_import.sql` once to enable Resume imports. PDF maximum is 300 pages; web uploads remain 4 MB. Resume extraction uses the chat budget and never updates or deletes existing content.
+
+## RAG upgrade rollout
+
+1. Apply `supabase/migrations/202611090001_rag_enhancement.sql` before deploying this version of the API, frontend, or indexing worker. The migration preserves already approved active indexes. It adds Markdown upload support, hybrid retrieval, and approval of an exact completed index.
+2. In **Knowledge base**, wait for processing to complete before saving **AI use** approval. After an explicit reindex, save approval again to publish the new index. Existing PDF and DOCX files can be reindexed to get section-aware chunks.
+3. Keep `RAG_AGENT_ENABLED=false` initially. Run a reviewed evaluation set against the hybrid path and a test deployment with the agent enabled. Check multi-project coverage, citation support, withdrawal, latency, and cost before enabling the agent in production.
+
+**AI monitoring** shows reported token categories and the rates used for each model call. Rates are application estimates. The database controls the active query embedding model. To change models later, stage same-content reindexes for every approved document, then switch the model and indexes together through the service-only `rag_switch_embedding` RPC. The current storage format requires 1,536-dimensional vectors. Model-switch preparation requires a worker configured for the candidate embedding model and rate.
