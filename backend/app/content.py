@@ -217,15 +217,22 @@ async def admin_logs(
     feed: Literal["requests", "jobs", "audit"],
     page: int = Query(1, ge=1, le=2000000),
     size: int = Query(10, ge=10, le=50),
+    status: Literal["running", "completed", "failed"] | None = None,
+    action: str | None = Query(None, min_length=1, max_length=160),
     credentials=Depends(bearer),
     client=Depends(get_auth_client),
 ):
     if size not in (10, 20, 50):
         raise HTTPException(422, "Page size must be 10, 20 or 50")
+    if (status is not None and feed != "requests") or (action is not None and feed != "audit"):
+        raise HTTPException(422, "Filter does not match the log")
+    args = {"p_feed": feed, "p_page": page, "p_size": size}
+    if feed != "jobs":
+        args["p_filter"] = status if feed == "requests" else action
     return await rpc(
         client,
         "admin_log_page",
-        {"p_feed": feed, "p_page": page, "p_size": size},
+        args,
         credentials.credentials,
     )
 

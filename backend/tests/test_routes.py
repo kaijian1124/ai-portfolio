@@ -49,13 +49,18 @@ def test_admin_log_page_forwards_valid_pagination(client, monkeypatch):
     rpc = AsyncMock(return_value={"rows": [], "has_next": False})
     monkeypatch.setattr(content, "rpc", rpc)
     path = "/api/v1/admin/logs/requests"
-    assert client.get(path + "?page=2&size=20").json() == {"rows": [], "has_next": False}
+    assert client.get(path + "?page=2&size=20&status=failed").json() == {
+        "rows": [],
+        "has_next": False,
+    }
     assert rpc.await_args.args[1:] == (
         "admin_log_page",
-        {"p_feed": "requests", "p_page": 2, "p_size": 20},
+        {"p_feed": "requests", "p_page": 2, "p_size": 20, "p_filter": "failed"},
         "test-token",
     )
     assert client.get(path + "?size=30").status_code == 422
+    assert client.get(path + "?action=delete").status_code == 422
+    assert client.get(path + "?status=pending").status_code == 422
     assert client.get(path + "?page=0").status_code == 422
     assert client.get("/api/v1/admin/logs/other").status_code == 422
     assert TestClient(create_app()).get(path).status_code == 401

@@ -22,21 +22,25 @@ export function LogPagination({
   name,
   label,
   hasNext,
+  filter,
 }: {
   query: LogQuery;
   path: string;
   name: string;
   label: string;
   hasNext: boolean;
+  filter?: { label: string; value: string; options: readonly string[] };
 }) {
   const { page, size } = logPagination(query, name);
   const pageKey = name + "Page";
   const sizeKey = name + "Size";
+  const filterKey = name + "Filter";
   const preserved = Object.entries(query).flatMap<[string, string]>(
     ([key, value]) =>
       key !== pageKey &&
       key !== sizeKey &&
-      /^(requests|audit|jobs)(Page|Size)$/.test(key) &&
+      key !== filterKey &&
+      /^(requests|audit|jobs)(Page|Size|Filter)$/.test(key) &&
       typeof value === "string"
         ? [[key, value]]
         : [],
@@ -47,6 +51,7 @@ export function LogPagination({
       "?" +
       new URLSearchParams([
         ...preserved,
+        ...(filter?.value ? [[filterKey, filter.value]] : []),
         [pageKey, String(target)],
         [sizeKey, String(size)],
       ])
@@ -54,10 +59,29 @@ export function LogPagination({
   }
   return (
     <nav className="ingestion-pagination" aria-label={label + " pagination"}>
-      <form action={path} method="get" className="ingestion-pagination">
+      <form
+        key={filter?.value + ":" + size}
+        action={path}
+        method="get"
+        className="ingestion-pagination"
+        aria-label={label + " filters"}
+      >
         {preserved.map(([key, value]) => (
           <input key={key} name={key} value={value} type="hidden" />
         ))}
+        {filter && (
+          <>
+            <label htmlFor={filterKey}>{filter.label}</label>
+            <select id={filterKey} name={filterKey} defaultValue={filter.value}>
+              <option value="">All</option>
+              {filter.options.map((value) => (
+                <option value={value} key={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <label htmlFor={sizeKey}>Rows per page</label>
         <select id={sizeKey} name={sizeKey} defaultValue={size}>
           {sizes.map((value) => (

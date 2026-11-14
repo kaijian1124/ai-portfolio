@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 const db=new PGlite({extensions:{vector}});const admin='11111111-1111-4111-8111-111111111111';
 before(async()=>{await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid primary key);CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;INSERT INTO auth.users VALUES('${admin}');CREATE SCHEMA storage;CREATE TABLE storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
-for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql','202611140002_retrieval_lab.sql','202611140003_admin_log_pagination.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
+for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql','202611140002_retrieval_lab.sql','202611140003_admin_log_pagination.sql','202611140004_admin_log_filters.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
 await db.exec(`INSERT INTO portfolio_private.admin_users(user_id) VALUES('${admin}')`)});
 after(async()=>db.close());
 async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>k==='p_candidate_ids'?'{'+args[k].join(',')+'}':typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
@@ -181,4 +181,29 @@ test('admin activity pages reach older requests and reject unauthorized access',
   }
   await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[randomUUID()]);
   await assert.rejects(rpc('admin_log_page',{p_feed:'requests',p_page:1,p_size:10}),/Administrator access required/);
+}));
+
+test('log filters match older records before pagination and list recorded actions',()=>transaction(async()=>{
+  await db.exec(`INSERT INTO portfolio_private.chat_requests(id,session_id,ip_hash,reserved_usd,status,created_at)
+    SELECT gen_random_uuid(),gen_random_uuid(),'TEST',0.05,
+      CASE WHEN n>50 THEN 'failed' ELSE 'completed' END,now()-n*interval '1 minute'
+    FROM generate_series(1,61) n;
+    INSERT INTO portfolio_private.audit_events(request_id,actor_id,entity_type,entity_id,action,request_payload,after_data,created_at)
+    SELECT gen_random_uuid(),'11111111-1111-4111-8111-111111111111','documents',gen_random_uuid(),
+      CASE WHEN n>50 THEN 'delete' ELSE 'update' END,'{}','{}',now()-n*interval '1 minute'
+    FROM generate_series(1,61) n`);
+  await owner();
+  for (const [feed,filter,field] of [['requests','failed','status'],['audit','delete','action']]) {
+    const args={p_feed:feed,p_page:1,p_size:10,p_filter:filter};
+    const first=await rpc('admin_log_page',args);
+    assert.equal(first.rows.length,10);
+    assert.ok(first.rows.every(row=>row[field]===filter));
+    assert.equal(first.has_next,true);
+    const second=await rpc('admin_log_page',{...args,p_page:2});
+    assert.equal(second.rows.length,1);
+    assert.equal(second.has_next,false);
+    if (feed==='audit') assert.deepEqual(first.actions,['delete','update']);
+  }
+  await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[randomUUID()]);
+  await assert.rejects(rpc('admin_log_page',{p_feed:'audit',p_page:1,p_size:10,p_filter:'delete'}),/Administrator access required/);
 }));

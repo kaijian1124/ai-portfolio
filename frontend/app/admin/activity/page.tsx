@@ -18,6 +18,7 @@ type AuditRow = {
   action: string;
   source: number;
 };
+const statuses = ["running", "completed", "failed"] as const;
 export const dynamic = "force-dynamic";
 
 export default async function Activity({
@@ -30,13 +31,18 @@ export default async function Activity({
   const query = await searchParams;
   const requests = logPagination(query, "requests");
   const audit = logPagination(query, "audit");
+  const status = statuses.find((value) => value === query.requestsFilter) ?? "";
+  const action =
+    typeof query.auditFilter === "string" && query.auditFilter.length <= 160
+      ? query.auditFilter
+      : "";
   const [requestResult, auditResult] = await Promise.all([
     adminApi<LogPage<RequestRow>>(
-      `/api/v1/admin/logs/requests?page=${requests.page}&size=${requests.size}`,
+      `/api/v1/admin/logs/requests?page=${requests.page}&size=${requests.size}${status ? "&status=" + status : ""}`,
       access.accessToken,
     ),
-    adminApi<LogPage<AuditRow>>(
-      `/api/v1/admin/logs/audit?page=${audit.page}&size=${audit.size}`,
+    adminApi<LogPage<AuditRow> & { actions: string[] }>(
+      `/api/v1/admin/logs/audit?page=${audit.page}&size=${audit.size}${action ? "&action=" + encodeURIComponent(action) : ""}`,
       access.accessToken,
     ),
   ]);
@@ -67,6 +73,7 @@ export default async function Activity({
               name="requests"
               label="Recent requests"
               hasNext={requestResult.data.has_next}
+              filter={{ label: "Status", value: status, options: statuses }}
             />
           </>
         ) : (
@@ -109,6 +116,14 @@ export default async function Activity({
               name="audit"
               label="Audit history"
               hasNext={auditResult.data.has_next}
+              filter={{
+                label: "Action",
+                value: action,
+                options:
+                  action && !auditResult.data.actions.includes(action)
+                    ? [...auditResult.data.actions, action]
+                    : auditResult.data.actions,
+              }}
             />
           </>
         ) : (
