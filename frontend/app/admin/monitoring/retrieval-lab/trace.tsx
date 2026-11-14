@@ -23,7 +23,7 @@ type Trace = {
     status: string;
     latency_ms?: number;
     before: string[];
-    after: Array<{ id: string; score: number; kept: boolean }>;
+    after: Array<{ id: string; score?: number; kept: boolean }>;
   }>;
   model?: string;
   top_p?: number | null;
@@ -486,7 +486,7 @@ export function RetrievalTrace({
                     <ChunkDetails
                       key={hit.id}
                       source={{ id: hit.id, kind: "document", title: "" }}
-                      label={`#${rank + 1} · ${hit.id.slice(0, 8)} · Score ${hit.score.toFixed(4)} · ${hit.kept ? "Kept" : "Excluded"}`}
+                      label={`#${rank + 1} · ${hit.id.slice(0, 8)} ${hit.score !== undefined ? `· Score ${hit.score.toFixed(4)} ` : ""}· ${hit.kept ? "Kept" : "Excluded"}`}
                     />
                   ))}
                 </div>

@@ -237,7 +237,7 @@ class UsageLedger:
         )
         return response.data[0].embedding
 
-    async def generate(self, stage, instructions, data, schema, limit):
+    async def generate(self, stage, instructions, data, schema, limit, *, timeout=None):
         user = json.dumps(data, ensure_ascii=False)
         definition = schema.model_json_schema()
         upper = len((instructions + user + json.dumps(definition)).encode("utf-8")) + 1000
@@ -248,6 +248,7 @@ class UsageLedger:
             instructions=instructions,
             input=user,
             max_output_tokens=limit,
+            **({"timeout": timeout} if timeout is not None else {}),
             text={
                 "format": {
                     "type": "json_schema",

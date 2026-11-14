@@ -1,3 +1,4 @@
+import json
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -5,8 +6,9 @@ from zipfile import ZipFile
 
 import httpx
 import pytest
+from openai import APITimeoutError
 
-from app.chat_engine import resolve_vague_query, vague_query
+from app.chat_engine import UsageLedger, resolve_vague_query, vague_query
 from app.ingestion import clean, extract_document, pdf_layout_tables, pdf_sections
 from app.rerank import rerank_candidates, validate_ranking
 
@@ -66,33 +68,35 @@ def test_pdf_table_alignment_requires_same_plain_text():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("valid", [True, False])
-async def test_reranking_changes_order_and_provider_failure_preserves_rrf(monkeypatch, valid):
+@pytest.mark.parametrize("ranking", [[1, 0], [1, 1], [1, 2], None])
+async def test_reranking_reports_openai_usage_and_falls_back_to_rrf(monkeypatch, ranking):
     monkeypatch.setattr("app.rerank.rpc", AsyncMock(return_value=True))
     monkeypatch.setenv("RAG_RERANK_ENABLED", "true")
-    monkeypatch.setenv("COHERE_API_KEY", "mock-key")
-    monkeypatch.setenv("RERANK_USD_PER_REQUEST", "0.001")
+    monkeypatch.setenv("OPENAI_CHAT_MODEL", "gpt-4.1-mini")
     chunks = [{"id": "a", "excerpt": "one"}, {"id": "b", "excerpt": "correct"}]
-    payload = {
-        "results": [
-            {"index": 1, "relevance_score": 0.9},
-            {"index": 0, "relevance_score": 0.2},
-        ]
-    }
 
-    async def post(request):
-        assert request.url.host == "api.cohere.com"
-        assert b"correct" in request.content
-        return httpx.Response(200 if valid else 429, json=payload)
+    async def create(**kwargs):
+        assert not kwargs["store"]
+        assert kwargs["model"] == "gpt-4.1-mini"
+        assert "correct" in kwargs["input"]
+        if ranking is None:
+            raise APITimeoutError(httpx.Request("POST", "https://api.openai.com/v1/responses"))
+        return SimpleNamespace(
+            output_text=json.dumps({"order": ranking}),
+            usage=SimpleNamespace(input_tokens=200, output_tokens=20),
+        )
 
-    ledger = SimpleNamespace(cost=0, check=lambda price: None, record=AsyncMock())
-    async with httpx.AsyncClient(transport=httpx.MockTransport(post)) as client:
-        ordered, trace = await rerank_candidates(client, ledger, "question", chunks, 1)
+    ledger = UsageLedger(SimpleNamespace(responses=SimpleNamespace(create=create)))
+    ordered, trace = await rerank_candidates(None, ledger, "question", chunks, 1)
+    assert trace["model"] == "gpt-4.1-mini"
     assert trace["before"] == ["a", "b"]
-    assert ordered[0]["id"] == ("b" if valid else "a")
-    assert ledger.cost == pytest.approx(0.001)
-    if valid:
-        assert trace["after"][0] == {"id": "b", "score": 0.9, "kept": True}
+    assert ordered[0]["id"] == ("b" if ranking == [1, 0] else "a")
+    if ranking is not None:
+        assert ledger.calls[0]["stage"] == "rerank"
+        assert ledger.calls[0]["input_tokens"] == 200
+        assert ledger.cost > 0
+    if ranking == [1, 0]:
+        assert trace["after"][0] == {"id": "b", "kept": True}
     else:
         assert "RRF used" in trace["status"]
 
@@ -112,10 +116,6 @@ async def test_implicit_rewrite_is_bounded_to_remembered_project_choices():
 
 
 def test_reranker_preserves_candidate_identity_and_rejects_bad_indexes():
-    assert validate_ranking(
-        [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.1}], 2
-    ) == [(1, 0.9), (0, 0.1)]
+    assert validate_ranking([1, 0], 2) == [1, 0]
     with pytest.raises(ValueError):
-        validate_ranking(
-            [{"index": 1, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.1}], 2
-        )
+        validate_ranking([1, 1], 2)
