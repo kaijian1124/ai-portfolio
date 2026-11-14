@@ -12,6 +12,7 @@ export type RequestRow = {
     cached_input_tokens?: number;
     output_tokens?: number;
     embedding_tokens?: number;
+    rerank_requests?: number;
     input_usd_per_million?: number;
     cached_input_usd_per_million?: number;
     output_usd_per_million?: number;
@@ -53,9 +54,11 @@ export function RequestTable({ rows }: { rows: RequestRow[] }) {
                             : ` · USD ${Number(call.cost_usd).toFixed(6)}`}
                           {call.usage_status === "unknown"
                             ? null
-                            : call.embedding_tokens !== undefined
-                              ? ` · ${call.embedding_tokens} embedding tokens at $${call.embedding_usd_per_million}/M`
-                              : ` · ${(call.input_tokens ?? 0) - (call.cached_input_tokens ?? 0)} input at $${call.input_usd_per_million}/M · ${call.cached_input_tokens} cached at $${call.cached_input_usd_per_million}/M · ${call.output_tokens} output at $${call.output_usd_per_million}/M`}
+                            : call.rerank_requests !== undefined
+                              ? ` · ${call.rerank_requests} rerank request (configured estimate)`
+                              : call.embedding_tokens !== undefined
+                                ? ` · ${call.embedding_tokens} embedding tokens at $${call.embedding_usd_per_million}/M`
+                                : ` · ${(call.input_tokens ?? 0) - (call.cached_input_tokens ?? 0)} input at $${call.input_usd_per_million}/M · ${call.cached_input_tokens} cached at $${call.cached_input_usd_per_million}/M · ${call.output_tokens} output at $${call.output_usd_per_million}/M`}
                         </li>
                       ))}
                     </ul>

@@ -249,7 +249,10 @@ def test_feedback_source_and_proxy_protection(client, monkeypatch):
 @pytest.mark.anyio
 async def test_retention_runs_without_ai_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    rpc = AsyncMock()
+    rpc = AsyncMock(return_value=None)
     monkeypatch.setattr(worker, "rpc", rpc)
     await worker.run()
-    assert rpc.await_args.args[1] == "worker_retention_cleanup"
+    assert [call.args[1] for call in rpc.await_args_list] == [
+        "worker_retention_cleanup",
+        "worker_claim_preview_job",
+    ]

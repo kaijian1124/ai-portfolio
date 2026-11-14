@@ -138,3 +138,176 @@ def test_project_ordinal_does_not_shift_after_revocation():
     history = [{"role": "assistant", "project_ids": ["projects:a", "projects:b"]}]
     assert chat_engine.resolve_question("first project", context, history) == ("first project", [])
     assert chat_engine.resolve_question("second project", context, history)[1] == ["b"]
+
+
+def test_persisted_state_resolves_references_without_recent_history():
+    context = {
+        "projects": [
+            {"id": "portfolio", "title": "AI Portfolio"},
+            {"id": "pilot", "title": "QA AI Pilot"},
+        ]
+    }
+    memory = {"active_project": "portfolio", "presented_projects": ["pilot", "portfolio"]}
+    assert chat_engine.resolve_question("how does it work?", context, [], memory=memory)[1] == [
+        "portfolio"
+    ]
+    assert chat_engine.resolve_question("the second project?", context, [], memory=memory)[1] == [
+        "portfolio"
+    ]
+    assert (
+        chat_engine.resolve_question("the second project?", {"projects": []}, [], memory=memory)[1]
+        == []
+    )
+
+
+def test_here_follows_explicit_portfolio_topic_even_if_previous_citations_drifted():
+    context = {
+        "projects": [
+            {"id": "portfolio", "title": "AI Portfolio"},
+            {"id": "assignment", "title": "LLM Assignment 2"},
+        ]
+    }
+    history = [
+        {"role": "user", "content": "How does Kai Jian evaluate his AI Portfolio chatbot?"},
+        {"role": "assistant", "project_ids": ["projects:assignment"]},
+    ]
+    assert chat_engine.resolve_question("how does he design his rag here?", context, history)[
+        1
+    ] == ["portfolio"]
+
+
+def test_project_order_follows_the_previous_ordered_request_not_citation_rank():
+    context = {
+        "projects": [
+            {"id": "a", "title": "TalentBank"},
+            {"id": "b", "title": "QA AI Pilot"},
+        ]
+    }
+    history = [
+        {"role": "user", "content": "按顺序介绍 TalentBank 和 QA AI Pilot。"},
+        {"role": "assistant", "project_ids": ["projects:b", "projects:a"]},
+    ]
+    assert chat_engine.resolve_question("第二个项目怎么评估？", context, history)[1] == ["b"]
+
+
+@pytest.mark.anyio
+async def test_ordinal_in_new_conversation_clarifies_without_retrieving(monkeypatch):
+    monkeypatch.setattr(chat_engine, "rpc", AsyncMock(return_value=[]))
+    retrieve = AsyncMock(return_value=[])
+    monkeypatch.setattr(chat_engine, "retrieve", retrieve)
+    result = await chat_engine.answer_question(None, None, "第二个项目怎么评估？", "new-session")
+    assert result["answer"] == "你指的是哪个已发布的项目？"
+    retrieve.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_portfolio_uses_its_approved_heading_and_english_question(monkeypatch):
+    portfolio = {"id": "portfolio", "title": "AI Portfolio", "slug": "ai-portfolio"}
+    assignment = {"id": "assignment", "title": "Retrieval Based LLM Assistant"}
+    heading = "AI Portfolio · Online Resume"
+    eval_chunk = {
+        "id": "evaluation",
+        "title": "AI Portfolio",
+        "heading": heading + " / 评估与改进",
+        "version_id": "v",
+        "excerpt": "用固定题集测试召回与引用。",
+    }
+
+    async def rpc(_client, name, args=None, **_kwargs):
+        if name == "portfolio_context":
+            return {"projects": [portfolio, assignment]}
+        if name == "rag_topics":
+            return [heading, "PDF 问答 RAG · LLM Assignment 2"]
+        if name == "hybrid_knowledge" and args.get("p_heading") == heading:
+            return [eval_chunk]
+        return []
+
+    async def generate(_self, stage, instructions, data, _schema, _limit):
+        assert data["user_question"] == "How did you evaluate the AI Portfolio RAG?"
+        assert "English" in data.get("answer_language", "")
+        assert [s["id"] for s in data["current_sources"]] == [
+            "projects:portfolio",
+            "evaluation",
+        ]
+        if stage == "answer":
+            return {
+                "answer": "使用固定题集和引用。",
+                "source_ids": ["evaluation"],
+                "insufficient_evidence": False,
+            }
+        return {
+            "answer": "I used a fixed set of questions to check recall and citations.",
+            "source_ids": ["evaluation"],
+            "insufficient_evidence": False,
+        }
+
+    monkeypatch.setattr(chat_engine, "rpc", rpc)
+    monkeypatch.setattr(chat_engine.UsageLedger, "embed", AsyncMock(return_value=[]))
+    monkeypatch.setattr(chat_engine.UsageLedger, "generate", generate)
+    result = await chat_engine.answer_question(
+        None, None, "How did you evaluate the AI Portfolio RAG?", "s"
+    )
+    assert result["answer"].startswith("I used")
+    assert [s["id"] for s in result["sources"]] == ["evaluation"]
+
+
+def test_pdf_margins_remove_repeated_running_title_and_number_but_not_body(monkeypatch):
+    pages = [
+        SimpleNamespace(
+            extract_text=lambda: (
+                "3\nReport • January\nBody with evidence.\n1        Source footnote."
+            )
+        ),
+        SimpleNamespace(extract_text=lambda: "Report • January\n4\nSecond body."),
+        SimpleNamespace(
+            extract_text=lambda: "5\nReport • January\nThird body.\n8        Distinct note."
+        ),
+    ]
+    monkeypatch.setattr(
+        "app.ingestion.PdfReader", lambda *a, **kw: SimpleNamespace(pages=pages, is_encrypted=False)
+    )
+    sections = extract_document(b"%PDF-sample", ".pdf")
+    assert [(s["page"], s["text"]) for s in sections] == [
+        (1, "Body with evidence."),
+        (1, "1        Source footnote."),
+        (2, "Second body."),
+        (3, "Third body."),
+        (3, "8        Distinct note."),
+    ]
+
+
+@pytest.mark.parametrize(
+    "question, expected_project, expected_heading, language",
+    [
+        ("How was the FYP evaluated?", "stock", "股票短期趋势预测 · FYP", "English"),
+        ("Bagaimana AI Portfolio dinilai?", "portfolio", "AI Portfolio · Online Resume", "Malay"),
+        ("AI Portfolio是怎样评估的？", "portfolio", "AI Portfolio · Online Resume", "Chinese"),
+        (
+            "How does the LLM Assignment 2 RAG work?",
+            "llm",
+            "PDF 问答 RAG · LLM Assignment 2",
+            "English",
+        ),
+    ],
+)
+def test_explicit_project_aliases_preserve_scope_and_question_language(
+    question, expected_project, expected_heading, language
+):
+    projects = [
+        {"id": "stock", "title": "Stock Short-Term Trend Forecasting Using Sentiment Analysis"},
+        {"id": "portfolio", "title": "AI Portfolio"},
+        {"id": "llm", "title": "Retrieval-Based LLM Assistant"},
+    ]
+    catalog, headings = chat_engine.topic_catalog(projects, [expected_heading])
+    assert find_projects(question, catalog) == [expected_project]
+    assert headings[expected_project] == ["heading:" + expected_heading]
+    assert chat_engine.question_language(question) == language
+
+
+def test_sentence_boundaries_do_not_split_initialisms_inside_a_sentence():
+    from app.ingestion import section_boundaries
+
+    text = "An earlier sentence. This report cites U.S. regulatory agencies. Next sentence."
+    boundaries, _ = section_boundaries(text)
+    assert text.index("regulatory") not in boundaries
+    assert text.index("Next") in boundaries

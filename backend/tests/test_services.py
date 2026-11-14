@@ -198,6 +198,8 @@ async def test_worker_activation_budget_integrity_and_failure(monkeypatch, mode)
 
     async def rpc(client, name, args=None, **kwargs):
         calls.append((name, args))
+        if name == "worker_load_approved_preview":
+            return None if mode == "integrity" else [{"ordinal": 0, "text": "Approved text."}]
         if name == "worker_reserve_budget":
             return mode != "budget"
         if name == "worker_finish_job":
@@ -215,13 +217,47 @@ async def test_worker_activation_budget_integrity_and_failure(monkeypatch, mode)
     ) as client:
         result = await worker.process_job(client, ai, job)
     assert result == (
-        "completed" if mode == "success" else "superseded" if mode == "superseded" else "failed"
+        "completed"
+        if mode == "success"
+        else "superseded"
+        if mode in ("integrity", "superseded")
+        else "failed"
     )
     if mode in ("budget", "integrity"):
         ai.embeddings.create.assert_not_awaited()
-    assert calls[-1][0] == "worker_finish_job"
+    if mode == "success":
+        ai.embeddings.create.assert_awaited_once()
+        assert ai.embeddings.create.await_args.kwargs["input"] == ["Approved text."]
+    assert calls[-1][0] == (
+        "worker_load_approved_preview" if mode == "integrity" else "worker_finish_job"
+    )
     if mode == "embedding":
         assert any(n == "worker_settle_budget" and a.get("p_failed") for n, a in calls)
+
+
+@pytest.mark.anyio
+async def test_prepare_preview_verifies_original_and_saves_chunks_without_ai(monkeypatch):
+    data = docx()
+    job = {
+        "id": str(uuid4()),
+        "lease_token": str(uuid4()),
+        "storage_path": "test/file.docx",
+        "filename": "file.docx",
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    calls = AsyncMock(return_value=True)
+    monkeypatch.setattr(worker, "rpc", calls)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=data))
+    ) as client:
+        assert await worker.prepare_preview(client, job) == "awaiting_review"
+        calls.assert_awaited_once()
+        assert calls.await_args.args[1] == "worker_save_preview"
+        assert calls.await_args.args[2]["p_chunks"][0]["text"]
+        calls.reset_mock()
+        assert await worker.prepare_preview(client, {**job, "sha256": "invalid"}) == "failed"
+        assert calls.await_args.args[1] == "worker_finish_job"
+        assert calls.await_args.args[2]["p_error"] == "file_integrity_failed"
 
 
 @pytest.mark.anyio
@@ -280,7 +316,7 @@ async def test_grounded_answers_and_citation_validation(monkeypatch, kind):
         ),
     )
     question = (
-        "How was its architecture implemented?"
+        "How was the portfolio architecture implemented?"
         if kind == "rag"
         else "技能是什么"
         if kind == "chinese"

@@ -291,6 +291,62 @@ async def ingestion_chunks(
     )
 
 
+@router.get("/documents/{record_id}/versions/{version_id}/preview")
+async def ingestion_preview(
+    record_id: UUID,
+    version_id: UUID,
+    offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    credentials=Depends(bearer),
+    client=Depends(get_auth_client),
+):
+    return await rpc(
+        client,
+        "admin_ingestion_preview",
+        {
+            "p_document": str(record_id),
+            "p_version": str(version_id),
+            "p_offset": offset,
+            "p_limit": limit,
+        },
+        credentials.credentials,
+    )
+
+
+class IngestionApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: UUID
+    preview_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/documents/{record_id}/approve-embedding")
+async def approve_embedding(
+    record_id: UUID,
+    body: IngestionApproval,
+    credentials=Depends(bearer),
+    client=Depends(get_auth_client),
+):
+    from app.files import dispatch_worker
+
+    result = await rpc(
+        client,
+        "admin_approve_ingestion_preview",
+        {"p_document": str(record_id), "p_job": str(body.job_id), "p_hash": body.preview_hash},
+        credentials.credentials,
+    )
+    result["worker_dispatched"] = await dispatch_worker(client)
+    return result
+
+
+@router.get("/retrieval-indexes/{index_id}")
+async def retrieval_index(
+    index_id: UUID, credentials=Depends(bearer), client=Depends(get_auth_client)
+):
+    return await rpc(
+        client, "admin_ingestion_provenance", {"p_index": str(index_id)}, credentials.credentials
+    )
+
+
 @router.post("/documents/{record_id}/reindex")
 async def reindex(
     record_id: UUID, body: dict, credentials=Depends(bearer), client=Depends(get_auth_client)

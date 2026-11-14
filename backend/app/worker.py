@@ -14,12 +14,9 @@ from app.db import base_url, headers, rpc
 from app.ingestion import chunk_sections, embedding_text, extract_document
 
 
-async def process_job(client, ai, job):
+async def prepare_preview(client, job):
     from starlette.concurrency import run_in_threadpool
 
-    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    reserved = False
-    tokens = 0
     try:
         response = await client.get(
             base_url()
@@ -32,10 +29,67 @@ async def process_job(client, ai, job):
         data = response.content
         if len(data) > 20971520 or hashlib.sha256(data).hexdigest() != job["sha256"]:
             raise ValueError("file_integrity_failed")
-        sections = await run_in_threadpool(
-            extract_document, data, PurePosixPath(job["filename"]).suffix.lower()
-        )
+        suffix = PurePosixPath(job["filename"]).suffix.lower()
+        cleaning_report = {}
+        sections = await run_in_threadpool(extract_document, data, suffix, cleaning_report)
         chunks = await run_in_threadpool(chunk_sections, sections)
+        saved = await rpc(
+            client,
+            "worker_save_preview",
+            {
+                "p_job": job["id"],
+                "p_lease": job["lease_token"],
+                "p_chunks": chunks,
+                "p_metadata": {
+                    "format": suffix.removeprefix("."),
+                    "sections": len(sections),
+                    "pages_with_text": len({s["page"] for s in sections if s["page"] is not None}),
+                    "source_sha256": job["sha256"],
+                    "cleaning": [
+                        "Unicode normalization and whitespace cleanup",
+                        *(
+                            [
+                                "Repeated running titles and adjacent page numbers",
+                                "Separate identifiable footnotes",
+                                "Skip contents-only pages and repeated standalone watermark labels",
+                                "Exclude annotation bodies and reconstruct regular tables",
+                            ]
+                            if suffix == ".pdf"
+                            else []
+                        ),
+                        *(["Remove Markdown front matter"] if suffix == ".md" else []),
+                    ],
+                    "chunker": "structure-aware-v2",
+                    **cleaning_report,
+                },
+            },
+            service=True,
+        )
+        return "awaiting_review" if saved else "superseded"
+    except Exception as error:  # noqa: BLE001 - persist the preview failure
+        await fail_job(client, job, error)
+        return "failed"
+
+
+async def fail_job(client, job, error):
+    code = str(error) if isinstance(error, ValueError) else type(error).__name__
+    await rpc(
+        client,
+        "worker_finish_job",
+        {"p_job": job["id"], "p_lease": job["lease_token"], "p_error": code[:80]},
+        service=True,
+    )
+
+
+async def process_job(client, ai, job):
+    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    reserved = False
+    tokens = 0
+    try:
+        args = {"p_job": job["id"], "p_lease": job["lease_token"]}
+        chunks = await rpc(client, "worker_load_approved_preview", args, service=True)
+        if not chunks:
+            return "superseded"
         price = float(os.getenv("EMBEDDING_USD_PER_MILLION", "0.02"))
         budget = float(os.getenv("INGESTION_DAILY_BUDGET_USD", "0"))
         if not math.isfinite(price) or not math.isfinite(budget) or price <= 0 or budget < 0:
@@ -57,6 +111,8 @@ async def process_job(client, ai, job):
         if not reserved:
             raise ValueError("embedding_daily_budget_reached")
         for index in range(0, len(chunks), 32):
+            if not await rpc(client, "worker_preview_current", args, service=True):
+                raise ValueError("approved_preview_superseded")
             batch = chunks[index : index + 32]
             embedded = await ai.embeddings.create(
                 model=model, input=[embedding_text(c) for c in batch], dimensions=1536
@@ -100,32 +156,28 @@ async def process_job(client, ai, job):
                 {"p_lease": job["lease_token"], "p_tokens": tokens, "p_cost": 0, "p_failed": True},
                 service=True,
             )
-        code = str(error) if isinstance(error, ValueError) else type(error).__name__
-        await rpc(
-            client,
-            "worker_finish_job",
-            {"p_job": job["id"], "p_lease": job["lease_token"], "p_error": code[:80]},
-            service=True,
-        )
+        await fail_job(client, job, error)
         return "failed"
 
 
 async def run(max_jobs=3):
     async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
         await rpc(client, "worker_retention_cleanup", service=True)
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Retention complete; ingestion disabled until OPENAI_API_KEY is configured.")
-        return
-    async with (
-        httpx.AsyncClient(timeout=30, follow_redirects=False) as client,
-        AsyncOpenAI(timeout=30, max_retries=0) as ai,
-    ):
         for _ in range(max_jobs):
-            job = await rpc(client, "worker_claim_job", service=True)
+            job = await rpc(client, "worker_claim_preview_job", service=True)
             if not job:
                 break
-            status = await process_job(client, ai, job)
-            print("ingestion", job["id"], status, flush=True)
+            status = await prepare_preview(client, job)
+            print("preview", job["id"], status, flush=True)
+        if not os.getenv("OPENAI_API_KEY"):
+            return
+        async with AsyncOpenAI(timeout=30, max_retries=0) as ai:
+            for _ in range(max_jobs):
+                job = await rpc(client, "worker_claim_embedding_job", service=True)
+                if not job:
+                    break
+                status = await process_job(client, ai, job)
+                print("ingestion", job["id"], status, flush=True)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { z } from "zod";
+import { approveEmbeddingAction } from "../../../catalog-actions";
 import { AdminNav } from "../../../../../components/admin-nav";
 import { getAdminAccess } from "../../../../../lib/admin-session";
 import { adminApi } from "../../../../../lib/catalog";
@@ -29,7 +30,7 @@ export default async function DocumentChunks({
   searchParams,
 }: {
   params: Promise<{ id: string; version: string }>;
-  searchParams: Promise<{ page?: string | string[] }>;
+  searchParams: Promise<{ page?: string | string[]; approval?: string }>;
 }) {
   const { id, version } = await params;
   if (!z.uuid().safeParse(id).success || !z.uuid().safeParse(version).success)
@@ -39,7 +40,7 @@ export default async function DocumentChunks({
   if (access.state === "unauthenticated") redirect("/login");
   if (access.state !== "authorized") redirect("/admin");
 
-  const { page } = await searchParams;
+  const { page, approval } = await searchParams;
   const pageNumber = typeof page === "string" ? Number(page) : 1;
   if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > 5001)
     notFound();
@@ -51,7 +52,47 @@ export default async function DocumentChunks({
     {},
     chunksSchema,
   );
-  const data = result.ok ? result.data : null;
+  const preview = await adminApi(
+    `/api/v1/admin/documents/${id}/versions/${version}/preview?offset=${offset}&limit=${pageSize}`,
+    access.accessToken,
+    {},
+    z
+      .object({
+        job_id: z.uuid(),
+        hash: z.string(),
+        approved_at: z.string().nullable(),
+        total: z.number(),
+        chunks: z.array(
+          z.object({
+            ordinal: z.number(),
+            page: z.number().nullable(),
+            heading: z.string().nullable(),
+            table_header: z.string().nullish(),
+            text: z.string(),
+            section_ordinal: z.number(),
+            source_start: z.number(),
+            source_end: z.number(),
+          }),
+        ),
+      })
+      .nullable(),
+  );
+  const draft = preview.ok ? preview.data : null;
+  const data =
+    result.ok && draft
+      ? {
+          ...result.data,
+          index_id: null,
+          total: draft.total,
+          chunks: draft.chunks.map((item) => ({
+            ...item,
+            table_header: item.table_header ?? null,
+            text_content: item.text,
+          })),
+        }
+      : result.ok
+        ? result.data
+        : null;
   const lastPage = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
   if (data && pageNumber > lastPage) redirect(`${path}?page=${lastPage}`);
 
@@ -72,6 +113,22 @@ export default async function DocumentChunks({
         {data ? (
           <>
             <h2>{data.title}</h2>
+            {approval === "failed" && (
+              <p role="alert">
+                Approval could not be confirmed. Reload and review the current
+                preview before retrying.
+              </p>
+            )}
+            {approval === "queued" && (
+              <p role="status">Approved. Embedding is queued.</p>
+            )}
+            {draft && (
+              <p className="field-help">
+                {draft.approved_at
+                  ? "Embedding approved. This snapshot is queued or being processed."
+                  : "Preview awaiting embedding approval. Review every page of chunks below before approving."}
+              </p>
+            )}
             <p className="field-help">
               {data.filename} · {data.total}{" "}
               {data.total === 1 ? "chunk" : "chunks"}
@@ -129,6 +186,30 @@ export default async function DocumentChunks({
                   <a href={`${path}?page=${pageNumber + 1}`}>Next page</a>
                 )}
               </nav>
+            )}
+            {draft && !draft.approved_at && pageNumber === lastPage && (
+              <form
+                action={approveEmbeddingAction.bind(
+                  null,
+                  id,
+                  version,
+                  draft.job_id,
+                  draft.hash,
+                  pageNumber,
+                )}
+              >
+                <label>
+                  <input
+                    type="checkbox"
+                    name="confirmed"
+                    value="yes"
+                    required
+                  />{" "}
+                  I reviewed this snapshot and approve sending these chunks to
+                  the embedding provider.
+                </label>
+                <button type="submit">Approve for embedding</button>
+              </form>
             )}
           </>
         ) : (

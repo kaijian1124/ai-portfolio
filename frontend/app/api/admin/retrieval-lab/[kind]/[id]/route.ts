@@ -15,7 +15,10 @@ export async function GET(
       { error: "Unauthorized" },
       { status: 401, headers },
     );
-  if (!["runs", "chunks"].includes(kind) || !z.uuid().safeParse(id).success)
+  if (
+    !["runs", "chunks", "indexes"].includes(kind) ||
+    !z.uuid().safeParse(id).success
+  )
     return NextResponse.json({ error: "Not found" }, { status: 404, headers });
   const result = await adminApi(
     `/api/v1/admin/retrieval-${kind}/${id}`,

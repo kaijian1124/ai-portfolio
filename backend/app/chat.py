@@ -7,7 +7,6 @@ import hmac
 import json
 import math
 import os
-import re
 import time
 from uuid import UUID, uuid4
 
@@ -17,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
-from app.chat_engine import FALLBACK, answer_question, price_configuration, sources_current
+from app.chat_engine import answer_question, fallback_for, price_configuration, sources_current
 from app.db import headers, rpc
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -163,18 +162,14 @@ async def chat(body: Question, request: Request):
                 if result.get("dependencies") and not await sources_current(
                     client, result["dependencies"]
                 ):
-                    result["answer"] = (
-                        "目前没有足够的已核实资料回答这个问题。"
-                        if re.search(r"[\u4e00-\u9fff]", body.question)
-                        else FALLBACK
-                    )
+                    result["answer"] = fallback_for(body.question)
                     result["sources"] = []
                     result["dependencies"] = []
                     result["candidate_ids"] = []
                     trace["source_status"] = "withdrawn"
                 message_id = await rpc(
                     client,
-                    "chat_finish",
+                    "chat_finish_with_memory" if result.get("memory") else "chat_finish",
                     {
                         "p_request": request_id,
                         "p_question": body.question,
@@ -185,6 +180,7 @@ async def chat(body: Question, request: Request):
                         "p_embedding": result["embedding_tokens"],
                         "p_cost": result["cost_usd"],
                         "p_latency": int((time.monotonic() - started) * 1000),
+                        **({"p_memory": result["memory"]} if result.get("memory") else {}),
                     },
                     service=True,
                 )

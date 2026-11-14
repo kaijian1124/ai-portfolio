@@ -45,7 +45,7 @@ export function UploadForm({
         result.duplicate
           ? "This file is already registered."
           : kind === "knowledge"
-            ? "Uploaded and queued. Review and approve before public AI use."
+            ? "Uploaded. Review the prepared chunks before approving embedding."
             : "Uploaded. Activate a Resume, or publish the related project for an image.",
       );
       form.reset();
@@ -139,7 +139,7 @@ export function UploadForm({
           ? "PNG/JPEG/WebP up to 4 MB. Images are public assets; upload only material intended for public display."
           : kind === "resume"
             ? "PDF up to 4 MB. Files stay private; only the active version is publicly downloadable. After upload, text is sent to OpenAI to preview new portfolio drafts; nothing is overwritten or published."
-            : "Text PDF, DOCX, or Markdown up to 4 MB and 300 PDF pages. Scanned PDFs require OCR elsewhere. Upload only material cleared for OpenAI embedding. Approve public AI use after processing completes."}
+            : "Text PDF, DOCX, or Markdown up to 4 MB and 300 PDF pages. Scanned PDFs require OCR elsewhere. Review the prepared chunks before approving OpenAI embedding. Approve public AI use separately after indexing."}
       </p>
       <button disabled={pending}>{pending ? "Uploading…" : "Upload"}</button>
       {message && (

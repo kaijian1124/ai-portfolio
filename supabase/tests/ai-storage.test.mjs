@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 const db=new PGlite({extensions:{vector}});const admin='11111111-1111-4111-8111-111111111111';
 before(async()=>{await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid primary key);CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;INSERT INTO auth.users VALUES('${admin}');CREATE SCHEMA storage;CREATE TABLE storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
-for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql','202611140002_retrieval_lab.sql','202611140003_admin_log_pagination.sql','202611140004_admin_log_filters.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
+for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql','202611140002_retrieval_lab.sql','202611140003_admin_log_pagination.sql','202611140004_admin_log_filters.sql','202611140005_ingestion_preview.sql','202611140006_rag_project_memory.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
 await db.exec(`INSERT INTO portfolio_private.admin_users(user_id) VALUES('${admin}')`)});
 after(async()=>db.close());
 async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>k==='p_candidate_ids'?'{'+args[k].join(',')+'}':typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
@@ -14,16 +14,76 @@ async function transaction(fn){await db.exec('BEGIN');try{return await fn()}fina
 async function owner(){await db.exec('SET LOCAL ROLE authenticated');await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[admin])}
 async function service(){await db.exec('SET LOCAL ROLE service_role')}
 async function register(){await owner();return(await rpc('admin_register_upload',{p_kind:'knowledge',p_title:'TEST ONLY',p_filename:'test.pdf',p_path:randomUUID()+'/'+randomUUID()+'.pdf',p_sha256:'a'.repeat(64),p_size:100})).record}
+test('preview approval gates embedding and binds the exact payload to the current job',()=>transaction(async()=>{
+ const doc=await register(); await service();
+ const job=await rpc('worker_claim_preview_job');
+ const chunks=[{ordinal:0,text:'Review this exact sentence.',page:1,heading:'Methods',section_ordinal:0,source_start:0,source_end:27}];
+ assert.equal(await rpc('worker_load_approved_preview',{p_job:job.id,p_lease:job.lease_token}),null);
+ await rpc('worker_save_preview',{p_job:job.id,p_lease:job.lease_token,p_chunks:chunks,p_metadata:{format:'pdf',sections:1}});
+ assert.equal(await rpc('worker_claim_job'),null);
+ assert.equal(await rpc('worker_claim_embedding_job'),null);
+ await owner();
+ const preview=await rpc('admin_ingestion_preview',{p_document:doc.id,p_version:job.version_id});
+ assert.equal(preview.chunks[0].text,chunks[0].text);
+ await db.exec('SAVEPOINT wrong_hash');
+ await assert.rejects(rpc('admin_approve_ingestion_preview',{p_document:doc.id,p_job:job.id,p_hash:'bad'}),/changed/i);
+ await db.exec('ROLLBACK TO SAVEPOINT wrong_hash');
+ await rpc('admin_approve_ingestion_preview',{p_document:doc.id,p_job:job.id,p_hash:preview.hash});
+ await service();
+ const leased=await rpc('worker_claim_embedding_job');
+ assert.deepEqual(await rpc('worker_load_approved_preview',{p_job:job.id,p_lease:leased.lease_token}),chunks);
+ assert.equal(await rpc('worker_load_approved_preview',{p_job:job.id,p_lease:randomUUID()}),null);
+ const embedding=Array(1536).fill(0);embedding[0]=1;
+ await db.exec('SAVEPOINT different_chunk');
+ await assert.rejects(rpc('worker_store_chunks',{p_job:job.id,p_lease:leased.lease_token,p_chunks:[{...chunks[0],text:'Changed after approval',embedding}],p_model:'text-embedding-3-small'}),/differs from approved preview/i);
+ await db.exec('ROLLBACK TO SAVEPOINT different_chunk');
+ await owner(); await rpc('admin_reindex_document',{p_id:doc.id,p_request_id:randomUUID()});
+ await service();
+ assert.equal(await rpc('worker_load_approved_preview',{p_job:job.id,p_lease:leased.lease_token}),null);
+}));
+
+async function approvedLease(job, rows) {
+ await service();
+ const chunks=rows.map(({embedding,...chunk})=>chunk);
+ await rpc('worker_save_preview',{p_job:job.id,p_lease:job.lease_token,p_chunks:chunks,p_metadata:{}});
+ await owner();
+ const preview=await rpc('admin_ingestion_preview',{p_document:job.document_id,p_version:job.version_id});
+ await rpc('admin_approve_ingestion_preview',{p_document:job.document_id,p_job:job.id,p_hash:preview.hash});
+ await service();
+ return await rpc('worker_claim_embedding_job');
+}
+async function storeReviewed(job, rows, model) {
+ const lease=await approvedLease(job,rows);
+ await rpc('worker_store_chunks',{p_job:job.id,p_lease:lease.lease_token,p_chunks:rows,p_model:model});
+ return lease.lease_token;
+}
+test('project state survives unrelated turns and is isolated to its session',()=>transaction(async()=>{
+ await service();
+ const session=randomUUID(), other=randomUUID();
+ const memory={active_project:'portfolio',presented_projects:['portfolio','pilot'],pending_question:null};
+ for(let index=0;index<5;index++){
+  const request=randomUUID();
+  await rpc('chat_admit',{p_session:session,p_request:request,p_ip_hash:'memory-test-'+index,p_budget:1,p_reserve:.05});
+  const args={p_request:request,p_question:'test',p_answer:'answer',p_sources:[],p_prompt:2,p_output:1,p_embedding:0,p_cost:0,p_latency:5};
+  if(index===0) await rpc('chat_finish_with_memory',{...args,p_memory:memory});
+  else await rpc('chat_finish',args);
+ }
+ assert.deepEqual(await rpc('rag_project_memory',{p_session:session}),memory);
+ assert.equal(await rpc('rag_project_memory',{p_session:other}),null);
+ await db.exec('SET LOCAL ROLE anon');
+ await assert.rejects(rpc('rag_project_memory',{p_session:session}),/permission denied/);
+}));
+
 test('admins can inspect completed private chunks while reindexing, scoped to the exact version',()=>transaction(async()=>{
-const doc=await register();await service();const job=await rpc('worker_claim_job');
+const doc=await register();await service();const job=await rpc('worker_claim_preview_job');
 const args={p_document:doc.id,p_version:job.version_id};
 const model='text-embedding-3-small', embedding=Array(1536).fill(0);embedding[0]=1;
 await owner();assert.equal((await rpc('admin_ingestion_chunks',args)).index_id,null);
-await service();await rpc('worker_store_chunks',{p_job:job.id,p_lease:job.lease_token,p_chunks:[
+const lease=await storeReviewed(job,[
  {ordinal:0,text:'First excerpt',page:1,heading:'Overview',embedding},
  {ordinal:1,text:'Second excerpt',page:2,heading:'Methods',table_header:'Test results',embedding},
-],p_model:model});
-await rpc('worker_finish_job',{p_job:job.id,p_lease:job.lease_token,p_model:model});
+],model);
+await rpc('worker_finish_job',{p_job:job.id,p_lease:lease,p_model:model});
 await owner();
 await rpc('admin_reindex_document',{p_id:doc.id,p_request_id:randomUUID()});
 const result=await rpc('admin_ingestion_chunks',{...args,p_offset:1,p_limit:1});
@@ -42,10 +102,10 @@ await db.exec('SET LOCAL ROLE anon');
 await assert.rejects(rpc('admin_ingestion_chunks',args),/permission denied/);
 }));
 test('knowledge ingestion remains private until approval, then respects immediate withdrawal',()=>transaction(async()=>{
-const doc=await register();await service();const job=await rpc('worker_claim_job');assert.equal(job.document_id,doc.id);const embedding=Array(1536).fill(0);embedding[0]=1;
+const doc=await register();await service();const job=await rpc('worker_claim_preview_job');assert.equal(job.document_id,doc.id);const embedding=Array(1536).fill(0);embedding[0]=1;
 const model='text-embedding-3-small';
-await rpc('worker_store_chunks',{p_job:job.id,p_lease:job.lease_token,p_chunks:[{ordinal:0,text:'TEST evidence',page:1,heading:'Methods',embedding}],p_model:model});
-assert.equal(await rpc('worker_finish_job',{p_job:job.id,p_lease:job.lease_token,p_model:model}),true);
+const lease=await storeReviewed(job,[{ordinal:0,text:'TEST evidence',page:1,heading:'Methods',embedding}],model);
+assert.equal(await rpc('worker_finish_job',{p_job:job.id,p_lease:lease,p_model:model}),true);
 assert.deepEqual(await rpc('search_knowledge',{p_embedding:embedding,p_model:model}),[]);
 await owner();await rpc('admin_catalog_mutate',{p_resource:'documents',p_id:doc.id,p_data:{approved_for_chat:true},p_expected_revision:doc.revision+1,p_request_id:randomUUID()});
 await service();assert.equal((await rpc('search_knowledge',{p_embedding:embedding,p_model:model})).length,1);
@@ -62,7 +122,7 @@ await service();assert.deepEqual(await rpc('search_knowledge',{p_embedding:embed
 assert.equal(await rpc('knowledge_current',{p_ids:[hits[0].id]}),false);
 assert.equal(await rpc('public_source',{p_id:hits[0].id}),null);
 }));
-test('expired or forged worker leases cannot write chunks',()=>transaction(async()=>{await register();await service();const job=await rpc('worker_claim_job');await assert.rejects(rpc('worker_store_chunks',{p_job:job.id,p_lease:randomUUID(),p_chunks:[],p_model:'test'}),/lease/)}));
+test('expired or forged worker leases cannot write chunks',()=>transaction(async()=>{await register();await service();const job=await rpc('worker_claim_preview_job');await assert.rejects(rpc('worker_store_chunks',{p_job:job.id,p_lease:randomUUID(),p_chunks:[],p_model:'test'}),/lease/)}));
 test('chat admission refuses duplicate session turns and over-budget reservations',()=>transaction(async()=>{await service();const session=randomUUID();await rpc('chat_admit',{p_session:session,p_request:randomUUID(),p_ip_hash:'TEST',p_budget:.05,p_reserve:.05});await assert.rejects(rpc('chat_admit',{p_session:session,p_request:randomUUID(),p_ip_hash:'TEST',p_budget:.05,p_reserve:.05}),/pending request/)}));
 test('chat admission enforces the daily budget across sessions',()=>transaction(async()=>{await service();await rpc('chat_admit',{p_session:randomUUID(),p_request:randomUUID(),p_ip_hash:'TEST',p_budget:.05,p_reserve:.05});await assert.rejects(rpc('chat_admit',{p_session:randomUUID(),p_request:randomUUID(),p_ip_hash:'TEST',p_budget:.05,p_reserve:.05}),/budget/)}));
 test('private service operations are not callable by anonymous users',()=>transaction(async()=>{await db.exec('SET LOCAL ROLE anon');await assert.rejects(rpc('worker_claim_job'),/permission denied/)}));
@@ -75,7 +135,7 @@ await service();await rpc('evaluation_save_report',{p_dataset_hash:'a'.repeat(64
 await owner();assert.equal((await rpc('admin_monitoring')).evaluation.case_count,1);
 }));
 test('indexing budget zero prevents paid work and unsettled leases count against the budget',()=>transaction(async()=>{
-await register();await service();const job=await rpc('worker_claim_job');
+await register();await service();const job=await approvedLease(await rpc('worker_claim_preview_job'),[{ordinal:0,text:'Test'}]);
 assert.equal(await rpc('worker_reserve_budget',{p_job:job.id,p_lease:job.lease_token,p_budget:0,p_reserve:.01}),false);
 assert.equal(await rpc('worker_reserve_budget',{p_job:job.id,p_lease:job.lease_token,p_budget:.01,p_reserve:.01}),true);
 assert.equal(await rpc('worker_settle_budget',{p_lease:job.lease_token,p_tokens:10,p_cost:.0001}),true);
@@ -84,18 +144,18 @@ assert.equal(await rpc('worker_settle_budget',{p_lease:job.lease_token,p_tokens:
 
 
 test('reindexing the same file supersedes an older index lease',()=>transaction(async()=>{
-const doc=await register();await service();const old=await rpc('worker_claim_job');
+const doc=await register();await service();const old=await rpc('worker_claim_preview_job');
 await owner();await rpc('admin_reindex_document',{p_id:doc.id,p_request_id:randomUUID()});
 await service();assert.equal(await rpc('worker_finish_job',{p_job:old.id,p_lease:old.lease_token,p_model:'TEST'}),false);
-const current=await rpc('worker_claim_job');assert.notEqual(current.id,old.id);assert.equal(current.version_id,old.version_id);
+const current=await rpc('worker_claim_preview_job');assert.notEqual(current.id,old.id);assert.equal(current.version_id,old.version_id);
 }));
 test('model switch waits for a complete candidate and never inherits approval for changed bytes',()=>transaction(async()=>{
 const doc=await register(),embedding=Array(1536).fill(0);embedding[0]=1;
 await service();
 async function finish(model,text) {
- const job=await rpc('worker_claim_job');
- await rpc('worker_store_chunks',{p_job:job.id,p_lease:job.lease_token,p_chunks:[{ordinal:0,text,heading:'Pilot',embedding}],p_model:model});
- assert.equal(await rpc('worker_finish_job',{p_job:job.id,p_lease:job.lease_token,p_model:model}),true);
+ const job=await rpc('worker_claim_preview_job');
+ const lease=await storeReviewed(job,[{ordinal:0,text,heading:'Pilot',embedding}],model);
+ assert.equal(await rpc('worker_finish_job',{p_job:job.id,p_lease:lease,p_model:model}),true);
 }
 await finish('text-embedding-3-small','Original evidence');
 await owner();await rpc('admin_catalog_mutate',{p_resource:'documents',p_id:doc.id,p_data:{approved_for_chat:true},p_expected_revision:doc.revision+1,p_request_id:randomUUID()});

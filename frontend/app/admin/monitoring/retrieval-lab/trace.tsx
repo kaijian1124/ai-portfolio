@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type Hit = { id: string; rank: number; score?: number | null };
 type Source = {
@@ -10,9 +10,21 @@ type Source = {
   role?: string;
   chars?: number;
   excerpt?: string;
+  index_id?: string | null;
 };
 type Trace = {
   route?: string;
+  query_resolution?: string;
+  resolved_query?: string;
+  memory_used?: boolean;
+  reranking?: Array<{
+    scope: string | null;
+    model: string;
+    status: string;
+    latency_ms?: number;
+    before: string[];
+    after: Array<{ id: string; score: number; kept: boolean }>;
+  }>;
   model?: string;
   top_p?: number | null;
   temperature?: number | null;
@@ -43,16 +55,196 @@ type Chunk = {
   text: string;
 };
 
-const sections = [
-  "Query",
-  "Vector",
-  "Keyword",
-  "RRF / Top K",
-  "Rerank",
-  "Context",
-  "Generation",
-  "Citations",
+const ingestionStages = [
+  "Document Parsing",
+  "Cleaning & Metadata",
+  "Chunking",
+  "Admin Review",
+  "Vector Indexing",
 ] as const;
+type IngestionStage = (typeof ingestionStages)[number];
+const sections = [
+  ...ingestionStages,
+  "Query",
+  "Hybrid Search",
+  "Recall",
+  "Reranking",
+  "Answer Generation",
+  "Chunk Citations",
+] as const;
+
+type IndexRecord = {
+  metadata: {
+    format?: string;
+    sections?: number;
+    pages_with_text?: number;
+    pdf_pages?: number;
+    running_lines_removed?: number;
+    footnote_sections?: number;
+    toc_pages_removed?: number;
+    watermark_lines_removed?: number;
+    pdf_annotations_skipped?: number;
+    pdf_tables_reconstructed?: number;
+    docx_tables?: number;
+    docx_contents_blocks_removed?: number;
+    unresolved_glyphs?: number;
+    cleaning?: string[];
+    chunker?: string;
+    source_sha256?: string;
+  } | null;
+  approved_at: string | null;
+  chunks: number;
+  model: string | null;
+  hash: string | null;
+};
+
+function IngestionEvidence({
+  stage,
+  trace,
+}: {
+  stage: IngestionStage;
+  trace: Trace;
+}) {
+  const [records, setRecords] = useState<Record<string, IndexRecord | null>>(
+    {},
+  );
+  const loadingIndexes = useRef(new Set<string>());
+  const indexes = new Map<string, Source>();
+  for (const source of trace.context) {
+    if (source.index_id && !indexes.has(source.index_id))
+      indexes.set(source.index_id, source);
+  }
+  async function load(id: string) {
+    if (id in records || loadingIndexes.current.has(id)) return;
+    loadingIndexes.current.add(id);
+    let record: IndexRecord | null = null;
+    try {
+      const response = await fetch(`/api/admin/retrieval-lab/indexes/${id}`, {
+        cache: "no-store",
+      });
+      if (response.ok) record = await response.json();
+    } finally {
+      setRecords((previous) => ({ ...previous, [id]: record }));
+      loadingIndexes.current.delete(id);
+    }
+  }
+  return (
+    <>
+      <p>
+        These stages ran during ingestion for the document indexes used as
+        context in this request.
+      </p>
+      {!indexes.size && (
+        <p>
+          No document index was recorded for this request. Older traces may lack
+          index IDs.
+        </p>
+      )}
+      {Array.from(indexes, ([id, source]) => (
+        <details
+          key={id}
+          className="retrieval-chunk"
+          onToggle={(event) => {
+            if (event.currentTarget.open) void load(id).catch(() => {});
+          }}
+        >
+          <summary>
+            {source.title} · {id.slice(0, 8)}
+          </summary>
+          {!(id in records) ? (
+            <p role="status">Loading index details…</p>
+          ) : !records[id] ? (
+            <p>Index details are unavailable.</p>
+          ) : (
+            <IndexStage stage={stage} record={records[id]} />
+          )}
+        </details>
+      ))}
+    </>
+  );
+}
+
+function IndexStage({
+  stage,
+  record,
+}: {
+  stage: IngestionStage;
+  record: IndexRecord;
+}) {
+  const metadata = record.metadata;
+  if (stage === "Vector Indexing")
+    return (
+      <p>
+        {record.chunks} indexed chunks · Model {record.model ?? "Unavailable"}
+      </p>
+    );
+  if (stage === "Admin Review")
+    return record.approved_at ? (
+      <>
+        <p>Embedding approved on {record.approved_at}.</p>
+        <p>Approved snapshot: {record.hash}</p>
+      </>
+    ) : (
+      <p>No before-embedding approval was recorded for this index.</p>
+    );
+  if (!metadata)
+    return <p>This index has no stored parsing or cleaning record.</p>;
+  if (stage === "Document Parsing")
+    return (
+      <p>
+        Format {metadata.format} · {metadata.sections} extracted sections ·{" "}
+        {metadata.pdf_pages !== undefined
+          ? `${metadata.pages_with_text ?? 0} of ${metadata.pdf_pages} PDF pages with text`
+          : "Page numbers unavailable for this format"}
+      </p>
+    );
+  if (stage === "Chunking")
+    return (
+      <p>
+        {record.chunks} chunks · Chunker {metadata.chunker ?? "Unavailable"}.
+        Open a chunk in Recall or Chunk Citations to see its text and location.
+      </p>
+    );
+  return (
+    <>
+      {metadata.running_lines_removed !== undefined && (
+        <p>
+          {metadata.running_lines_removed} repeated margin lines removed ·{" "}
+          {metadata.footnote_sections ?? 0} separate footnote sections
+        </p>
+      )}
+      {metadata.toc_pages_removed !== undefined && (
+        <p>
+          {metadata.toc_pages_removed} contents-only pages skipped ·{" "}
+          {metadata.watermark_lines_removed ?? 0} watermark lines removed ·{" "}
+          {metadata.pdf_annotations_skipped ?? 0} PDF annotations excluded ·{" "}
+          {metadata.pdf_tables_reconstructed ?? 0} regular tables reconstructed
+        </p>
+      )}
+      {metadata.docx_tables !== undefined && (
+        <p>
+          {metadata.docx_tables} Word tables reconstructed ·{" "}
+          {metadata.docx_contents_blocks_removed ?? 0} contents blocks skipped
+        </p>
+      )}
+      {!!metadata.unresolved_glyphs && (
+        <p>
+          {metadata.unresolved_glyphs} unreadable glyphs remain. Check the
+          original before approval.
+        </p>
+      )}
+      <ul>
+        {metadata.cleaning?.map((rule) => (
+          <li key={rule}>{rule}</li>
+        ))}
+      </ul>
+      <p>
+        Stored chunk metadata includes its page or heading when available,
+        section, text offsets, and any detected table header.
+      </p>
+    </>
+  );
+}
 
 function ChunkDetails({ source, label }: { source: Source; label: string }) {
   const [chunk, setChunk] = useState<Chunk | null>();
@@ -182,9 +374,24 @@ export function RetrievalTrace({
               </button>
             ))}
           </div>
+          {ingestionStages.some((item) => item === section) && (
+            <IngestionEvidence
+              stage={section as IngestionStage}
+              trace={trace}
+            />
+          )}
           {section === "Query" && (
             <>
               <p>Route {trace.route ?? "Unavailable"}</p>
+              {trace.query_resolution === "clarification_requested" && (
+                <p>{answer ?? "Asked the visitor to clarify the project."}</p>
+              )}
+              {trace.query_resolution === "rewritten" && (
+                <p>Resolved query: {trace.resolved_query}</p>
+              )}
+              {trace.memory_used && (
+                <p>Conversation project state was available.</p>
+              )}
               {trace.searches.map((search, index) => (
                 <p key={index}>
                   {search.query} ·{" "}
@@ -198,8 +405,16 @@ export function RetrievalTrace({
           )}
           {(["Vector", "Keyword", "RRF / Top K"] as const).map(
             (step) =>
-              section === step && (
+              ((section === "Hybrid Search" && step !== "RRF / Top K") ||
+                (section === "Recall" && step === "RRF / Top K")) && (
                 <div key={step}>
+                  <h3>
+                    {step === "Vector"
+                      ? "Semantic Search"
+                      : step === "Keyword"
+                        ? "Keyword Search"
+                        : "Fused Candidates (RRF / Top K)"}
+                  </h3>
                   {!trace.searches.length && (
                     <p>Document retrieval did not run.</p>
                   )}
@@ -236,10 +451,49 @@ export function RetrievalTrace({
                 </div>
               ),
           )}
-          {section === "Rerank" && (
-            <p>Independent reranker skipped. Candidate order comes from RRF.</p>
+          {section === "Reranking" && (
+            <>
+              {!trace.reranking?.length && (
+                <p>
+                  {trace.searches.length
+                    ? "No reranker record is available for this request."
+                    : "Skipped because document retrieval did not run."}
+                </p>
+              )}
+              {trace.reranking?.map((run, index) => (
+                <div key={index}>
+                  <h3>
+                    Round {index + 1} · {run.model}
+                  </h3>
+                  <p>
+                    {run.status}
+                    {run.latency_ms !== undefined &&
+                      ` · ${run.latency_ms} ms`}{" "}
+                    · {run.scope ?? "All approved sources"}
+                  </p>
+                  <h4>RRF baseline</h4>
+                  {run.before.length ? (
+                    <ol>
+                      {run.before.map((id) => (
+                        <li key={id}>{id}</li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p>No candidates.</p>
+                  )}
+                  {!!run.after.length && <h4>Reranked order</h4>}
+                  {run.after.map((hit, rank) => (
+                    <ChunkDetails
+                      key={hit.id}
+                      source={{ id: hit.id, kind: "document", title: "" }}
+                      label={`#${rank + 1} · ${hit.id.slice(0, 8)} · Score ${hit.score.toFixed(4)} · ${hit.kept ? "Kept" : "Excluded"}`}
+                    />
+                  ))}
+                </div>
+              ))}
+            </>
           )}
-          {section === "Generation" && (
+          {section === "Answer Generation" && (
             <>
               <p>
                 Model {trace.model ?? "Unavailable"} · Top P{" "}
@@ -250,15 +504,16 @@ export function RetrievalTrace({
               {answer && <p className="ingestion-chunk-text">{answer}</p>}
             </>
           )}
-          {(section === "Context" || section === "Citations") && (
+          {(section === "Recall" || section === "Chunk Citations") && (
             <>
-              {section === "Citations" &&
+              {section === "Chunk Citations" &&
                 trace.source_status === "withdrawn" && (
                   <p>
                     Sources changed before delivery. Citations were discarded.
                   </p>
                 )}
-              {(section === "Context" ? trace.context : trace.citations).map(
+              {section === "Recall" && <h3>Context sent to the model</h3>}
+              {(section === "Recall" ? trace.context : trace.citations).map(
                 (source, index) => (
                   <ChunkDetails
                     key={source.id}
@@ -267,9 +522,9 @@ export function RetrievalTrace({
                   />
                 ),
               )}
-              {!(section === "Context" ? trace.context : trace.citations)
+              {!(section === "Recall" ? trace.context : trace.citations)
                 .length && <p>No sources recorded at this stage.</p>}
-              {section === "Context" && !!trace.context_excluded?.length && (
+              {section === "Recall" && !!trace.context_excluded?.length && (
                 <>
                   <h3>Excluded by context limits</h3>
                   {trace.context_excluded.map((source) => (

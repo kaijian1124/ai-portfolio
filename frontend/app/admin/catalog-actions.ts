@@ -1,5 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { z } from "zod";
 import { getAdminAccess } from "../../lib/admin-session";
 import { adminApi, catalogMutation } from "../../lib/catalog";
 import {
@@ -59,6 +61,39 @@ export async function catalogAction(
     record: result.data.record,
   };
 }
+export async function approveEmbeddingAction(
+  id: string,
+  version: string,
+  jobId: string,
+  hash: string,
+  page: number,
+  form: FormData,
+) {
+  const access = await getAdminAccess();
+  if (access.state !== "authorized") redirect("/login");
+  if (
+    ![id, version, jobId].every((value) => z.uuid().safeParse(value).success) ||
+    !/^[0-9a-f]{64}$/.test(hash) ||
+    !Number.isInteger(page) ||
+    page < 1
+  ) {
+    redirect("/admin/knowledge-base");
+  }
+  const path = `/admin/document-chunks/${id}/${version}`;
+  if (form.get("confirmed") !== "yes")
+    redirect(`${path}?page=${page}&approval=failed`);
+  const result = await adminApi(
+    `/api/v1/admin/documents/${id}/approve-embedding`,
+    access.accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify({ job_id: jobId, preview_hash: hash }),
+    },
+  );
+  revalidatePath(path);
+  redirect(`${path}?page=${page}&approval=${result.ok ? "queued" : "failed"}`);
+}
+
 export async function reindexAction(
   _previous: CatalogState,
   form: FormData,
@@ -87,6 +122,7 @@ export async function reindexAction(
   revalidatePath("/admin/knowledge-base");
   return {
     status: "saved",
-    message: "Processing queued. Publication still requires approval.",
+    message:
+      "Preparation queued. Review and approve the new chunks before embedding.",
   };
 }
