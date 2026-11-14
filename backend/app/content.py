@@ -221,6 +221,28 @@ async def versions(record_id: UUID, credentials=Depends(bearer), client=Depends(
     }
 
 
+@router.get("/documents/{record_id}/versions/{version_id}/chunks")
+async def ingestion_chunks(
+    record_id: UUID,
+    version_id: UUID,
+    offset: int = Query(0, ge=0, le=100000),
+    limit: int = Query(20, ge=1, le=50),
+    credentials=Depends(bearer),
+    client=Depends(get_auth_client),
+):
+    return await rpc(
+        client,
+        "admin_ingestion_chunks",
+        {
+            "p_document": str(record_id),
+            "p_version": str(version_id),
+            "p_offset": offset,
+            "p_limit": limit,
+        },
+        credentials.credentials,
+    )
+
+
 @router.post("/documents/{record_id}/reindex")
 async def reindex(
     record_id: UUID, body: dict, credentials=Depends(bearer), client=Depends(get_auth_client)

@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 const db=new PGlite({extensions:{vector}});const admin='11111111-1111-4111-8111-111111111111';
 before(async()=>{await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid primary key);CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;INSERT INTO auth.users VALUES('${admin}');CREATE SCHEMA storage;CREATE TABLE storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
-for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
+for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
 await db.exec(`INSERT INTO portfolio_private.admin_users(user_id) VALUES('${admin}')`)});
 after(async()=>db.close());
 async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>k==='p_candidate_ids'?'{'+args[k].join(',')+'}':typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
@@ -14,6 +14,33 @@ async function transaction(fn){await db.exec('BEGIN');try{return await fn()}fina
 async function owner(){await db.exec('SET LOCAL ROLE authenticated');await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[admin])}
 async function service(){await db.exec('SET LOCAL ROLE service_role')}
 async function register(){await owner();return(await rpc('admin_register_upload',{p_kind:'knowledge',p_title:'TEST ONLY',p_filename:'test.pdf',p_path:randomUUID()+'/'+randomUUID()+'.pdf',p_sha256:'a'.repeat(64),p_size:100})).record}
+test('admins can inspect completed private chunks while reindexing, scoped to the exact version',()=>transaction(async()=>{
+const doc=await register();await service();const job=await rpc('worker_claim_job');
+const args={p_document:doc.id,p_version:job.version_id};
+const model='text-embedding-3-small', embedding=Array(1536).fill(0);embedding[0]=1;
+await owner();assert.equal((await rpc('admin_ingestion_chunks',args)).index_id,null);
+await service();await rpc('worker_store_chunks',{p_job:job.id,p_lease:job.lease_token,p_chunks:[
+ {ordinal:0,text:'First excerpt',page:1,heading:'Overview',embedding},
+ {ordinal:1,text:'Second excerpt',page:2,heading:'Methods',table_header:'Test results',embedding},
+],p_model:model});
+await rpc('worker_finish_job',{p_job:job.id,p_lease:job.lease_token,p_model:model});
+await owner();
+await rpc('admin_reindex_document',{p_id:doc.id,p_request_id:randomUUID()});
+const result=await rpc('admin_ingestion_chunks',{...args,p_offset:1,p_limit:1});
+assert.equal(result.index_id,job.id);
+assert.equal(result.total,2);
+assert.equal(result.filename,'test.pdf');
+assert.deepEqual(result.chunks,[{ordinal:1,page:2,heading:'Methods',text_content:'Second excerpt',table_header:'Test results'}]);
+await db.exec('SAVEPOINT wrong_version');
+await assert.rejects(rpc('admin_ingestion_chunks',{...args,p_version:randomUUID()}),/not found/i);
+await db.exec('ROLLBACK TO SAVEPOINT wrong_version');
+await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[randomUUID()]);
+await db.exec('SAVEPOINT not_admin');
+await assert.rejects(rpc('admin_ingestion_chunks',args),/Administrator access required/);
+await db.exec('ROLLBACK TO SAVEPOINT not_admin');
+await db.exec('SET LOCAL ROLE anon');
+await assert.rejects(rpc('admin_ingestion_chunks',args),/permission denied/);
+}));
 test('knowledge ingestion remains private until approval, then respects immediate withdrawal',()=>transaction(async()=>{
 const doc=await register();await service();const job=await rpc('worker_claim_job');assert.equal(job.document_id,doc.id);const embedding=Array(1536).fill(0);embedding[0]=1;
 const model='text-embedding-3-small';

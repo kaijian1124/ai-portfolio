@@ -105,6 +105,10 @@ export default async function Editor({
                   >
                     View this version ↗
                   </a>
+                  {" · "}
+                  <a href={`/admin/document-chunks/${id}/${v.id}`}>
+                    Inspect chunks
+                  </a>
                 </article>
               ))}
           </>

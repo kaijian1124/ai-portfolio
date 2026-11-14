@@ -1428,6 +1428,24 @@ input[type="checkbox"] {
   display: inline-flex;
   align-items: center;
 }
+.version-row .ingestion-chunk-text {
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.ingestion-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.ingestion-pagination a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: underline;
+}
 .version-row label,
 .resume-import > label {
   display: flex;
