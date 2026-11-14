@@ -45,6 +45,22 @@ def body(**updates):
     }
 
 
+def test_admin_log_page_forwards_valid_pagination(client, monkeypatch):
+    rpc = AsyncMock(return_value={"rows": [], "has_next": False})
+    monkeypatch.setattr(content, "rpc", rpc)
+    path = "/api/v1/admin/logs/requests"
+    assert client.get(path + "?page=2&size=20").json() == {"rows": [], "has_next": False}
+    assert rpc.await_args.args[1:] == (
+        "admin_log_page",
+        {"p_feed": "requests", "p_page": 2, "p_size": 20},
+        "test-token",
+    )
+    assert client.get(path + "?size=30").status_code == 422
+    assert client.get(path + "?page=0").status_code == 422
+    assert client.get("/api/v1/admin/logs/other").status_code == 422
+    assert TestClient(create_app()).get(path).status_code == 401
+
+
 def test_catalog_routes_and_validation(client, monkeypatch):
     calls = []
 
@@ -178,15 +194,21 @@ def test_chat_stream_and_fail_closed(client, monkeypatch, mode):
     assert response.status_code == (503 if mode == "missing" else 429 if mode == "quota" else 200)
     if mode == "success":
         assert "event: answer" in response.text and "event: done" in response.text
+        trace = next(a for n, a in calls if n == "rag_record_trace")
+        assert trace["p_question"] == "TEST question"
+        assert "searches" not in response.text
         assert "HttpOnly" in response.headers["set-cookie"]
-        assert calls[-1][1]["p_cost"] == 0.001
+        assert next(a for n, a in calls if n == "chat_finish")["p_cost"] == 0.001
     if mode == "failure":
         assert "event: error" in response.text and "private provider error" not in response.text
-        assert calls[-1][1]["p_error"] == "generation_failed_or_cancelled"
+        assert (
+            next(a for n, a in calls if n == "chat_finish")["p_error"]
+            == "generation_failed_or_cancelled"
+        )
     if mode == "withdrawn":
         current.assert_awaited_once()
         assert "event: answer" in response.text and "Verified TEST" not in response.text
-        assert calls[-1][1]["p_sources"] == []
+        assert next(a for n, a in calls if n == "chat_finish")["p_sources"] == []
 
 
 def test_feedback_source_and_proxy_protection(client, monkeypatch):

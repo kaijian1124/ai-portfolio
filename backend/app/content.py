@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -210,6 +210,47 @@ async def activity(credentials=Depends(bearer), client=Depends(get_auth_client))
 @router.get("/monitoring")
 async def monitoring(credentials=Depends(bearer), client=Depends(get_auth_client)):
     return await rpc(client, "admin_monitoring", {}, credentials.credentials)
+
+
+@router.get("/logs/{feed}")
+async def admin_logs(
+    feed: Literal["requests", "jobs", "audit"],
+    page: int = Query(1, ge=1, le=2000000),
+    size: int = Query(10, ge=10, le=50),
+    credentials=Depends(bearer),
+    client=Depends(get_auth_client),
+):
+    if size not in (10, 20, 50):
+        raise HTTPException(422, "Page size must be 10, 20 or 50")
+    return await rpc(
+        client,
+        "admin_log_page",
+        {"p_feed": feed, "p_page": page, "p_size": size},
+        credentials.credentials,
+    )
+
+
+@router.get("/retrieval-runs")
+async def retrieval_runs(credentials=Depends(bearer), client=Depends(get_auth_client)):
+    return {"runs": await rpc(client, "admin_retrieval_runs", {}, credentials.credentials)}
+
+
+@router.get("/retrieval-runs/{request_id}")
+async def retrieval_run(
+    request_id: UUID, credentials=Depends(bearer), client=Depends(get_auth_client)
+):
+    return await rpc(
+        client, "admin_retrieval_trace", {"p_request": str(request_id)}, credentials.credentials
+    )
+
+
+@router.get("/retrieval-chunks/{chunk_id}")
+async def retrieval_chunk(
+    chunk_id: UUID, credentials=Depends(bearer), client=Depends(get_auth_client)
+):
+    return await rpc(
+        client, "admin_retrieval_chunk", {"p_chunk": str(chunk_id)}, credentials.credentials
+    )
 
 
 @router.get("/documents/{record_id}/versions")

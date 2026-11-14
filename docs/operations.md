@@ -26,6 +26,22 @@ Database tests run in isolated PGlite PostgreSQL with the vector extension; they
 
 ## Evaluation
 
+For a manual retrieval baseline, open Admin → AI monitoring → Retrieval Lab
+after submitting each test question in Ask AI. Use a fresh conversation for
+each case except the follow-up pair. Use the same approved document versions
+and model configuration when repeating a case. Record the supporting source,
+its rank at each stage, whether it reached the model, what the answer cited,
+and the request latency and estimated cost.
+
+| Case | Question | Evidence or expected behavior |
+| --- | --- | --- |
+| PDF methodology | Besides DOJ open-source reporting, which sources did the 2024 NMLRA use? | PDF viewer page 8. Look for court documents, law enforcement consultation, FinCEN analysis of suspicious activity reports, and US regulatory enforcement actions. Run when this PDF is approved in the test corpus. |
+| Project attribution | How does Kai Jian evaluate the retrieval quality and latency of this AI Portfolio chatbot? | Use the AI Portfolio note. Keep tooling and previous checks distinct from measured quality results. |
+| Missing evidence | What was AI Portfolio's measured answer accuracy on 100 reviewed questions? | If this fact is absent from the test corpus, state that the figure cannot be verified. |
+| Follow-up | Compare TalentBank and AI Portfolio by their main technologies. Then ask: What about the second project? | Use one conversation. Identify the second project from the first answer's actual order and verify it against current published sources. |
+
+These are acceptance cases, with no measured scores yet.
+
 From backend, after configuration and adding real published content:
 
 ```powershell

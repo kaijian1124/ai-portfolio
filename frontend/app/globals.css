@@ -2101,3 +2101,35 @@ tr:last-child td {
     display: none;
   }
 }
+.retrieval-run summary,
+.retrieval-chunk summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  padding-block: 0.65rem;
+}
+
+.retrieval-run summary .field-help {
+  display: block;
+  margin-inline-start: 1.1rem;
+}
+
+.retrieval-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block: 1rem;
+}
+
+.retrieval-stages button {
+  min-height: 44px;
+}
+
+.retrieval-stages button[aria-pressed="true"] {
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+.retrieval-chunk {
+  margin-inline-start: 1rem;
+  border-bottom: 1px solid var(--line);
+}

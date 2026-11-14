@@ -22,35 +22,6 @@ type Metrics = {
   average_latency_ms: number;
   errors: number;
   feedback: { positive: number; negative: number };
-  recent_requests: Array<{
-    id: string;
-    status: string;
-    cost_usd: number;
-    latency_ms: number;
-    error: string | null;
-    created_at: string;
-    rag_usage?: Array<{
-      stage: string;
-      model: string;
-      input_tokens?: number;
-      cached_input_tokens?: number;
-      output_tokens?: number;
-      embedding_tokens?: number;
-      input_usd_per_million?: number;
-      cached_input_usd_per_million?: number;
-      output_usd_per_million?: number;
-      embedding_usd_per_million?: number;
-      cost_usd?: number;
-      usage_status?: string;
-    }>;
-  }>;
-  jobs: Array<{
-    id: string;
-    status: string;
-    attempts: number;
-    error: string | null;
-    chunk_count: number | null;
-  }>;
 };
 export default async function Monitoring() {
   const access = await getAdminAccess();
@@ -72,6 +43,11 @@ export default async function Monitoring() {
         <h1>
           AI monitoring<span className="accent">.</span>
         </h1>
+        <nav className="ingestion-pagination" aria-label="Monitoring pages">
+          <a href="/admin/monitoring/retrieval-lab">Retrieval Lab</a>
+          <a href="/admin/monitoring/ingestion-jobs">Ingestion jobs</a>
+          <a href="/admin/activity">Requests &amp; audit history</a>
+        </nav>
         {!result.ok ? (
           <p className="content-message">
             Monitoring is unavailable. Check the AI database migration.
@@ -150,65 +126,6 @@ export default async function Monitoring() {
               review faithfulness and contradictions against the current
               sources.
             </p>
-            <h2>Recent requests</h2>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Status</th>
-                    <th>USD</th>
-                    <th>Latency ms</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.data.recent_requests.map((r) => (
-                    <tr key={r.id}>
-                      <td>{r.created_at.slice(0, 16).replace("T", " ")}</td>
-                      <td>{r.status}</td>
-                      <td>
-                        {Number(r.cost_usd).toFixed(6)}
-                        {r.rag_usage?.length ? (
-                          <details>
-                            <summary>Token and price details</summary>
-                            <ul>
-                              {r.rag_usage.map((call, index) => (
-                                <li key={index}>
-                                  {call.stage} · {call.model}
-                                  {call.usage_status === "unknown"
-                                    ? " · Usage not reported"
-                                    : ` · USD ${Number(call.cost_usd).toFixed(6)}`}
-                                  {call.usage_status === "unknown" ? null : call.embedding_tokens !== undefined
-                                    ? ` · ${call.embedding_tokens} embedding tokens at $${call.embedding_usd_per_million}/M`
-                                    : ` · ${(call.input_tokens ?? 0) - (call.cached_input_tokens ?? 0)} input at $${call.input_usd_per_million}/M · ${call.cached_input_tokens} cached at $${call.cached_input_usd_per_million}/M · ${call.output_tokens} output at $${call.output_usd_per_million}/M`}
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        ) : null}
-                      </td>
-                      <td>{r.latency_ms}</td>
-                      <td>{r.error ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <h2>Ingestion jobs</h2>
-            {!result.data.jobs.length ? (
-              <p>No jobs yet.</p>
-            ) : (
-              result.data.jobs.map((j) => (
-                <div className="version-row" key={j.id}>
-                  <strong>{j.status}</strong>
-                  <p>
-                    Attempts: {j.attempts} · Chunks: {j.chunk_count ?? "—"}
-                    {j.error ? ` · ${j.error}` : ""}
-                  </p>
-                </div>
-              ))
-            )}
           </>
         )}
       </section>

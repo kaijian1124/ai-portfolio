@@ -118,6 +118,24 @@ async def chat(body: Question, request: Request):
             httpx.AsyncClient(timeout=15) as client,
             AsyncOpenAI(timeout=30, max_retries=0) as ai,
         ):
+            trace = {"searches": [], "context": [], "citations": []}
+
+            async def record_trace():
+                # Diagnostics must not make a valid answer fail during a rolling deployment.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        rpc(
+                            client,
+                            "rag_record_trace",
+                            {
+                                "p_request": request_id,
+                                "p_question": body.question,
+                                "p_trace": trace,
+                            },
+                            service=True,
+                        ),
+                        timeout=2,
+                    )
 
             async def record_usage(calls):
                 await rpc(
@@ -133,7 +151,7 @@ async def chat(body: Question, request: Request):
                 )
                 task = asyncio.create_task(
                     asyncio.wait_for(
-                        answer_question(client, ai, body.question, session, record_usage),
+                        answer_question(client, ai, body.question, session, record_usage, trace),
                         timeout=50,
                     )
                 )
@@ -153,6 +171,7 @@ async def chat(body: Question, request: Request):
                     result["sources"] = []
                     result["dependencies"] = []
                     result["candidate_ids"] = []
+                    trace["source_status"] = "withdrawn"
                 message_id = await rpc(
                     client,
                     "chat_finish",
@@ -170,8 +189,13 @@ async def chat(body: Question, request: Request):
                     service=True,
                 )
                 settled = True
+                trace["citations"] = [
+                    {"id": source["id"], "kind": source["kind"], "title": source["title"]}
+                    for source in result["sources"]
+                ]
                 if not message_id:
                     raise RuntimeError("chat_request_expired")
+                trace["message_id"] = message_id
                 # Validate complete structured output before releasing any answer text.
                 payload = {
                     "text": result["answer"],
@@ -198,6 +222,7 @@ async def chat(body: Question, request: Request):
                     task.cancel()
                     with contextlib.suppress(BaseException):
                         await task
+                await record_trace()
                 if not settled:
                     with contextlib.suppress(Exception):
                         await asyncio.shield(

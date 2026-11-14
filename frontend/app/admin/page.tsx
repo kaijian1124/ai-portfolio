@@ -122,8 +122,8 @@ export default async function AdminPage() {
               ],
               [
                 "/admin/activity",
-                "Audit history",
-                "Follow changes across your portfolio.",
+                "Requests & audit history",
+                "Review chat requests and portfolio changes.",
                 "history",
               ],
             ] as Array<[string, string, string, IconName]>

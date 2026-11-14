@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 const db=new PGlite({extensions:{vector}});const admin='11111111-1111-4111-8111-111111111111';
 before(async()=>{await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid primary key);CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;INSERT INTO auth.users VALUES('${admin}');CREATE SCHEMA storage;CREATE TABLE storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
-for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
+for(const name of ['202611060001_public_content.sql','202611060002_profile_editing.sql','202611070001_catalog.sql','202611070002_ai_storage.sql','202611070003_buckets.sql','202611070004_resume_import.sql','202611090001_rag_enhancement.sql','202611140001_admin_ingestion_chunks.sql','202611140002_retrieval_lab.sql','202611140003_admin_log_pagination.sql'])await db.exec(await readFile(new URL('../migrations/'+name,import.meta.url),'utf8'));
 await db.exec(`INSERT INTO portfolio_private.admin_users(user_id) VALUES('${admin}')`)});
 after(async()=>db.close());
 async function rpc(name,args={}){const keys=Object.keys(args);const sql='SELECT public.'+name+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') AS result';return (await db.query(sql,keys.map(k=>k==='p_candidate_ids'?'{'+args[k].join(',')+'}':typeof args[k]==='object'&&args[k]!==null?JSON.stringify(args[k]):args[k]))).rows[0].result}
@@ -52,6 +52,11 @@ await service();assert.equal((await rpc('search_knowledge',{p_embedding:embeddin
 const unrelated=Array(1536).fill(0);unrelated[1]=1;
 const hits=await rpc('hybrid_knowledge',{p_embedding:unrelated,p_model:model,p_query:'evidence'});
 assert.equal(hits.length,1);assert.equal(await rpc('knowledge_current',{p_ids:[hits[0].id]}),true);
+const trace=await rpc('hybrid_knowledge',{p_embedding:unrelated,p_model:model,p_query:'evidence',p_project_id:null,p_heading:null,p_trace:true});
+assert.deepEqual(trace.vector,[]);
+assert.deepEqual(trace.keyword,[{id:hits[0].id,rank:1}]);
+assert.deepEqual(trace.fused.map(hit=>[hit.id,hit.score]),hits.map(hit=>[hit.id,hit.score]));
+
 await owner();await rpc('admin_catalog_mutate',{p_resource:'documents',p_id:doc.id,p_data:{},p_expected_revision:doc.revision+2,p_request_id:randomUUID(),p_operation:'delete'});
 await service();assert.deepEqual(await rpc('search_knowledge',{p_embedding:embedding,p_model:model}),[]);
 assert.equal(await rpc('knowledge_current',{p_ids:[hits[0].id]}),false);
@@ -133,4 +138,47 @@ test('resume imports add selected drafts only, skip existing content and replay 
  const kept=await rpc('admin_catalog_get',{p_resource:'skills',p_id:existing.id});assert.equal(kept.description,'KEEP EXISTING');assert.equal(kept.status,'published');assert.equal(kept.revision,existing.revision);
  assert.equal((await rpc('admin_catalog_get',{p_resource:'projects',p_id:result.created[0].id})).status,'draft');
  await db.exec('SET LOCAL ROLE anon');await assert.rejects(rpc('admin_resume_import_get',{p_resume:upload.record.id,p_request:request}),/permission denied/);
+}));
+
+test('retrieval traces are private, linked to one request, and retained for 30 days',()=>transaction(async()=>{
+const request=randomUUID(), session=randomUUID();
+await service();
+await rpc('chat_admit',{p_session:session,p_request:request,p_ip_hash:'TEST LAB',p_budget:1,p_reserve:.05});
+const trace={route:'rag',searches:[],context:[],citations:[]};
+await rpc('rag_record_trace',{p_request:request,p_question:'TEST Lab question',p_trace:trace});
+await owner();
+const list=await rpc('admin_retrieval_runs');
+assert.equal(list[0].id,request);
+assert.equal(list[0].question,'TEST Lab question');
+assert.deepEqual((await rpc('admin_retrieval_trace',{p_request:request})).trace,trace);
+await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[randomUUID()]);
+await db.exec('SAVEPOINT stranger');
+await assert.rejects(rpc('admin_retrieval_trace',{p_request:request}),/Administrator access required/);
+await db.exec('ROLLBACK TO SAVEPOINT stranger');
+await db.exec('RESET ROLE');
+await db.query("UPDATE portfolio_private.chat_requests SET created_at=now()-interval '31 days' WHERE id=$1",[request]);
+await owner();
+assert.equal(await rpc('admin_retrieval_trace',{p_request:request}),null);
+await db.exec('SET LOCAL ROLE anon');
+await assert.rejects(rpc('admin_retrieval_runs'),/permission denied/);
+}));
+
+test('admin activity pages reach older requests and reject unauthorized access',()=>transaction(async()=>{
+  await db.exec(`INSERT INTO portfolio_private.chat_sessions(id) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    INSERT INTO portfolio_private.chat_requests(id,session_id,ip_hash,reserved_usd,created_at)
+    SELECT gen_random_uuid(),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','TEST',0.05,now()-n*interval '1 minute'
+    FROM generate_series(1,55) n`);
+  await owner();
+  const first=await rpc('admin_log_page',{p_feed:'requests',p_page:1,p_size:50});
+  const second=await rpc('admin_log_page',{p_feed:'requests',p_page:2,p_size:50});
+  assert.equal(first.rows.length,50);
+  assert.equal(first.has_next,true);
+  assert.equal(second.rows.length,5);
+  assert.equal(second.has_next,false);
+  assert.equal(new Set([...first.rows,...second.rows].map(row=>row.id)).size,55);
+  for (const feed of ['jobs','audit']) {
+    assert.deepEqual(await rpc('admin_log_page',{p_feed:feed,p_page:1,p_size:10}),{rows:[],has_next:false});
+  }
+  await db.query("SELECT set_config('request.jwt.claim.sub',$1,true)",[randomUUID()]);
+  await assert.rejects(rpc('admin_log_page',{p_feed:'requests',p_page:1,p_size:10}),/Administrator access required/);
 }));

@@ -14,10 +14,11 @@ export default function Privacy() {
             follow-up questions.
           </p>
           <p>
-            Questions and answers are stored for up to 30 days. Usage metrics
-            are retained for up to 90 days. Network addresses are hashed for
-            abuse prevention. Cleanup runs with the background worker and may be
-            delayed if that worker is disabled.
+            Questions, answers, and administrator-only retrieval diagnostics are
+            stored for up to 30 days. Usage metrics are retained for up to 90
+            days. Network addresses are hashed for abuse prevention. Cleanup
+            runs with the background worker and may be delayed if that worker is
+            disabled.
           </p>
           <p>
             Relevant questions, limited conversation context, and approved

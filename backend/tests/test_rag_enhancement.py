@@ -69,7 +69,14 @@ async def test_agent_searches_both_projects_then_one_gap(monkeypatch, supported)
         if name == "hybrid_knowledge":
             scope = args["p_project_id"]
             scopes.append(scope)
-            return [{"id": scope, "title": scope, "excerpt": "Verified work.", "version_id": "v"}]
+            assert args["p_trace"]
+            return {
+                "vector": [{"id": scope, "rank": 1}],
+                "keyword": [],
+                "fused": [
+                    {"id": scope, "title": scope, "excerpt": "Verified work.", "version_id": "v"}
+                ],
+            }
         return []
 
     def response(value):
@@ -102,11 +109,14 @@ async def test_agent_searches_both_projects_then_one_gap(monkeypatch, supported)
         ),
     )
     monkeypatch.setattr(chat_engine, "rpc", rpc)
+    trace = {"searches": []}
     answer = await chat_engine.answer_question(
-        None, ai, "Compare TalentBank and QA AI Pilot", "session"
+        None, ai, "Compare TalentBank and QA AI Pilot", "session", trace=trace
     )
     assert scopes == ["a", "b", "b"]
     assert answer["candidate_ids"] == ["a", "b"]
+    assert [step["vector"][0]["id"] for step in trace["searches"]] == scopes
+    assert [source["id"] for source in trace["context"]] == ["projects:a", "projects:b", "a", "b"]
     assert answer["embedding_tokens"] == 30
     assert len(answer["usage_breakdown"]) == 5
     assert all(

@@ -30,7 +30,8 @@ const groups: Array<{
     label: "Insights",
     items: [
       ["/admin/monitoring", "AI monitoring", "chart"],
-      ["/admin/activity", "Audit history", "history"],
+      ["/admin/monitoring/ingestion-jobs", "Ingestion jobs", "layers"],
+      ["/admin/activity", "Requests & audit history", "history"],
     ],
   },
 ];
@@ -69,7 +70,9 @@ export function AdminNav() {
                     href === "/admin"
                       ? pathname === href
                       : pathname === href ||
-                        pathname.startsWith(href + "/") ||
+                        (pathname.startsWith(href + "/") &&
+                          !(href === "/admin/monitoring" &&
+                            pathname === "/admin/monitoring/ingestion-jobs")) ||
                         (href === "/admin/resume" &&
                           pathname.startsWith("/admin/resume-import/"))
                   )

@@ -5,9 +5,11 @@ import json
 import math
 import os
 import re
+import time
 from datetime import UTC, datetime
 from typing import TypedDict
 
+from fastapi import HTTPException
 from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 from pydantic import BaseModel, ConfigDict, Field
@@ -370,32 +372,55 @@ def document_source(chunk):
     }
 
 
-async def retrieve(client, ledger, query, projects, agent):
+async def retrieve(client, ledger, query, projects, agent, trace=None):
     async def search(text, scopes):
+        started = time.monotonic()
         vector = await ledger.embed(text)
-        rows = await asyncio.gather(
-            *(
-                rpc(
-                    client,
-                    "hybrid_knowledge",
-                    {
-                        "p_embedding": vector,
-                        "p_model": ledger.embedding_model,
-                        "p_query": text,
-                        "p_project_id": project_id
-                        if not (project_id or "").startswith("heading:")
-                        else None,
-                        "p_heading": project_id.removeprefix("heading:")
-                        if (project_id or "").startswith("heading:")
-                        else None,
-                    },
-                    service=True,
+
+        async def search_scope(scope):
+            args = {
+                "p_embedding": vector,
+                "p_model": ledger.embedding_model,
+                "p_query": text,
+                "p_project_id": scope if not (scope or "").startswith("heading:") else None,
+                "p_heading": scope.removeprefix("heading:")
+                if (scope or "").startswith("heading:")
+                else None,
+            }
+            if trace is None:
+                return await rpc(client, "hybrid_knowledge", args, service=True)
+            try:
+                return await rpc(
+                    client, "hybrid_knowledge", {**args, "p_trace": True}, service=True
                 )
-                for project_id in scopes
-            )
-        )
+            except HTTPException as error:
+                if error.status_code not in (404, 503):
+                    raise
+                return await rpc(client, "hybrid_knowledge", args, service=True)
+
+        rows = await asyncio.gather(*(search_scope(scope) for scope in scopes))
         if any(scope is None for scope in rows):
             raise ValueError("index_generation_changed")
+        if trace is not None:
+            elapsed = round((time.monotonic() - started) * 1000)
+            kept = 2 if len(scopes) > 1 else 5
+            for scope, result in zip(scopes, rows):
+                fused = result["fused"] if isinstance(result, dict) else result
+                trace["searches"].append(
+                    {
+                        "query": text,
+                        "scope": scope,
+                        "latency_ms": elapsed,
+                        "vector": result.get("vector") if isinstance(result, dict) else None,
+                        "keyword": result.get("keyword") if isinstance(result, dict) else None,
+                        "fused": [
+                            {"id": str(chunk["id"]), "rank": rank, "score": chunk.get("score")}
+                            for rank, chunk in enumerate(fused, 1)
+                        ],
+                        "kept": [str(chunk["id"]) for chunk in fused[:kept]],
+                    }
+                )
+            rows = [result["fused"] if isinstance(result, dict) else result for result in rows]
         ledger.candidate_ids.extend(str(chunk["id"]) for scope in rows for chunk in scope)
         # Keep the strongest results from each project before adding general context.
         return [document_source(c) for scope in rows for c in scope[: 2 if len(scopes) > 1 else 5]]
@@ -495,7 +520,7 @@ SYSTEM = (
 )
 
 
-async def answer_question(client, ai, question, session, on_usage=None):
+async def answer_question(client, ai, question, session, on_usage=None, trace=None):
     context = await rpc(client, "portfolio_context", service=True) or {}
     history = await rpc(client, "rag_history", {"p_session": session}, service=True) or []
     topics = await rpc(client, "rag_topics", service=True) if route_query(question) == "rag" else []
@@ -513,12 +538,30 @@ async def answer_question(client, ai, question, session, on_usage=None):
     ledger = UsageLedger(ai, index, on_usage)
     documents = []
     agent = len(projects) > 1 and os.getenv("RAG_AGENT_ENABLED", "false").lower() == "true"
+    if trace is not None:
+        trace.update(
+            route="agent" if agent else "rag" if needs_search else "structured",
+            model=ledger.model,
+            embedding_model=ledger.embedding_model if needs_search else None,
+            scopes=projects[:3],
+            context_limit=16,
+            context_chars=18000,
+            vector_limit=12,
+            keyword_limit=12,
+            fused_limit=12,
+            temperature=None,
+            top_p=None,
+            reranker=None,
+            answer_max_output_tokens=800,
+        )
     if needs_search:
         if not projects and re.fullmatch(
             r"\s*(?:what is my assignment doing|what about (?:it|that)|(?:那个|这个)(?:作业|项目)[？?]?)\s*[?]?",
             question,
             re.IGNORECASE,
         ):
+            if trace is not None:
+                trace["route"] = "clarify"
             return {
                 "answer": "你指的是哪个已发布的项目？"
                 if re.search(r"[\u4e00-\u9fff]", question)
@@ -527,7 +570,7 @@ async def answer_question(client, ai, question, session, on_usage=None):
                 "dependencies": [],
                 **ledger.result(),
             }
-        documents = await retrieve(client, ledger, query, projects, agent)
+        documents = await retrieve(client, ledger, query, projects, agent, trace)
         if (
             documents
             and len(projects) < 3
@@ -537,11 +580,33 @@ async def answer_question(client, ai, question, session, on_usage=None):
                 client, "expand_knowledge", {"p_id": documents[0]["id"]}, service=True
             )
             documents.extend(
-                document_source(c)
+                {**document_source(c), "context_role": "neighbor"}
                 for c in (neighbors or [])
                 if str(c["id"]) not in {d["id"] for d in documents}
             )
     selected = select_sources(documents, structured_sources(context), projects, question)
+    if trace is not None:
+        trace["context_excluded"] = [
+            {"id": s["id"], "kind": s["kind"], "title": s["title"]}
+            for s in documents
+            if s not in selected
+        ]
+        trace["context"] = [
+            {
+                "id": s["id"],
+                "kind": s["kind"],
+                "title": s["title"],
+                "role": s.get("context_role", "retrieved"),
+                "chars": len(s["excerpt"]),
+                **(
+                    {"excerpt": s["excerpt"]}
+                    if s["kind"] == "structured" or s.get("context_role") == "neighbor"
+                    else {}
+                ),
+            }
+            for s in selected
+        ]
+    selected = [{key: value for key, value in s.items() if key != "context_role"} for s in selected]
     raw = (
         await ledger.generate(
             "answer", SYSTEM, {"question": query, "current_sources": selected}, GroundedAnswer, 800
